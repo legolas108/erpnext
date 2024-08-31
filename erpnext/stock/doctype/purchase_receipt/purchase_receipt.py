@@ -136,6 +136,10 @@ class PurchaseReceipt(BuyingController):
 		transporter_name: DF.Data | None
 	# end: auto-generated types
 
+	def autoname(self):
+		id = "{:03d}".format(frappe.db.sql(f"select nextval(`sPurchase Receipt {self.custom_season}`)", as_dict = 0)[0][0])
+		self.name = f"PR-{self.supplier}-{self.custom_season}-{id}"
+
 	def __init__(self, *args, **kwargs):
 		super().__init__(*args, **kwargs)
 		self.status_updater = [

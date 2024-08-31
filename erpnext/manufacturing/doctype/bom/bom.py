@@ -174,19 +174,24 @@ class BOM(WebsiteGenerator):
 	def autoname(self):
 		# ignore amended documents while calculating current index
 
-		search_key = f"{self.doctype}-{self.item}%"
+		prefix = self.doctype
+		op = f"-{self.operations[0].operation}" if len(self.operations) > 0 else ""
+		from_pot_size = ""
+		for item in self.items:
+			n = item.item_code.find("-") if re.match("^(A|P|(TS))[0-9]+-[^-]+$", item.item_code) else -1
+			if (n > -1):
+				from_pot_size = f"-{item.item_code[n + 1:]}"
+				break
+
+		label = f"{prefix}-{self.item}{op}{from_pot_size}"
+
 		existing_boms = frappe.get_all(
-			"BOM", filters={"name": ("like", search_key), "amended_from": ["is", "not set"]}, pluck="name"
+			"BOM", filters={"name": ("like", f"{label}%"), "amended_from": ["is", "not set"]}, pluck="name"
 		)
 
-		if existing_boms:
-			index = self.get_next_version_index(existing_boms)
-		else:
-			index = 1
-
-		prefix = self.doctype
+		index = self.get_next_version_index(existing_boms) if existing_boms else 1
 		suffix = "%.3i" % index  # convert index to string (1 -> "001")
-		bom_name = f"{prefix}-{self.item}-{suffix}"
+		bom_name = f"{label}-{suffix}"
 
 		if len(bom_name) <= 140:
 			name = bom_name
@@ -194,7 +199,7 @@ class BOM(WebsiteGenerator):
 			# since max characters for name is 140, remove enough characters from the
 			# item name to fit the prefix, suffix and the separators
 			truncated_length = 140 - (len(prefix) + len(suffix) + 2)
-			truncated_item_name = self.item[:truncated_length]
+			truncated_item_name = f"{self.item}{op}"[:truncated_length]
 			# if a partial word is found after truncate, remove the extra characters
 			truncated_item_name = truncated_item_name.rsplit(" ", 1)[0]
 			name = f"{prefix}-{truncated_item_name}-{suffix}"
@@ -1394,15 +1399,17 @@ def get_bom_diff(bom1, bom2):
 def item_query(doctype, txt, searchfield, start, page_len, filters):
 	meta = frappe.get_meta("Item", cached=True)
 	searchfields = meta.get_search_fields()
+	if "description" in searchfields:
+		searchfields.remove("description")
 
-	order_by = "idx desc, name, item_name"
+	order_by = "custom_full_name"
 
-	fields = ["name", "item_name", "item_group", "description"]
-	fields.extend([field for field in searchfields if field not in ["name", "item_group", "description"]])
+	fields = ["name", "custom_full_name", "item_group"]
+	fields.extend([field for field in searchfields if field not in fields])
 
-	searchfields = searchfields + [
+	searchfields += [
 		field
-		for field in [searchfield or "name", "item_code", "item_group", "item_name"]
+		for field in [searchfield or "name", "item_code", "item_group", "custom_full_name"]
 		if field not in searchfields
 	]
 

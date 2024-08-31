@@ -138,6 +138,11 @@ class WorkOrder(Document):
 		wip_warehouse: DF.Link | None
 	# end: auto-generated types
 
+	def autoname(self):
+		op = f"{self.operations[0].operation}-" if len(self.operations) > 0 else ""
+		id = "{:04d}".format(frappe.db.sql(f"select nextval(`sWork Order {self.custom_season}`)", as_dict = 0)[0][0])
+		self.name = f"WO-{self.production_item}-{op}{self.custom_season}-{id}"
+
 	def onload(self):
 		ms = frappe.get_doc("Manufacturing Settings")
 		self.set_onload("material_consumption", ms.material_consumption)
