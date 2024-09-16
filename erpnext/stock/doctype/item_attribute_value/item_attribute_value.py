@@ -16,9 +16,13 @@ class ItemAttributeValue(Document):
 
 		abbr: DF.Data
 		attribute_value: DF.Data
+		num_pots_per_flat: DF.Int
+		num_seeds_per_flat: DF.Int
+		num_tags_per_flat: DF.Int
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data
+		potsize: DF.Link | None
 	# end: auto-generated types
 
 	pass
