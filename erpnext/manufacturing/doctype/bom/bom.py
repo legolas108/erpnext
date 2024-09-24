@@ -176,14 +176,20 @@ class BOM(WebsiteGenerator):
 
 		prefix = self.doctype
 		op = f"-{self.operations[0].operation}" if len(self.operations) > 0 else ""
-		from_pot_size = ""
+		pot_sz_ex = ""
 		for item in self.items:
 			n = item.item_code.find("-") if re.match("^(A|P|(TS))[0-9]+-[^-]+$", item.item_code) else -1
 			if (n > -1):
-				from_pot_size = f"-{item.item_code[n + 1:]}"
-				break
+				pot_sz = item.item_code[n + 1:]
+				if ((op != "-Cutting") or (pot_sz != "Stk")):
+					pot_sz_ex = f"-{pot_sz}"
+					break
 
-		label = f"{prefix}-{self.item}{op}{from_pot_size}"
+		if ((pot_sz_ex == "") and self.custom_followup_bom):
+			tokens = self.custom_followup_bom.split("-")
+			pot_sz_ex = f"-{tokens[2]}"
+
+		label = f"{prefix}-{self.item}{op}{pot_sz_ex}"
 
 		existing_boms = frappe.get_all(
 			"BOM", filters={"name": ("like", f"{label}%"), "amended_from": ["is", "not set"]}, pluck="name"
