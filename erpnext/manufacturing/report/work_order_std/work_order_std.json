@@ -1,0 +1,31 @@
+{
+ "add_total_row": 0,
+ "columns": [],
+ "creation": "2024-10-06 16:48:51.701629",
+ "disabled": 0,
+ "docstatus": 0,
+ "doctype": "Report",
+ "filters": [],
+ "idx": 0,
+ "is_standard": "Yes",
+ "letterhead": null,
+ "modified": "2024-10-06 16:52:30.956393",
+ "modified_by": "Administrator",
+ "module": "Manufacturing",
+ "name": "Work Order Std",
+ "owner": "Administrator",
+ "prepared_report": 0,
+ "query": "select wo.`name`, wo.custom_item_full_name, wo.qty, substring(woi.item_code, 6) as flat_sz, wo.planned_start_date, if(fbi.item_code is not null, substring(fbi.item_code, 6), null) as potup_flat_sz\nfrom ((`tabWork Order` wo inner join `tabWork Order Item` woi on (wo.`name` = woi.parent) and (woi.parenttype = 'Work Order') and (woi.item_code like 'FLAT-%'))\n    left join `tabBOM` fb on (wo.custom_followup_bom = fb.`name`))\n    left join `tabBOM Item` fbi on (fb.name = fbi.parent) and (fbi.parenttype = 'BOM') and (fbi.item_code like 'FLAT-%');\n",
+ "ref_doctype": "Work Order",
+ "report_name": "Work Order Std",
+ "report_type": "Query Report",
+ "roles": [
+  {
+   "role": "Manufacturing User"
+  },
+  {
+   "role": "Stock User"
+  }
+ ],
+ "timeout": 0
+}
