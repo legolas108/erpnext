@@ -778,7 +778,7 @@ class Item(Document):
 			if variants:
 				if len(variants) <= 30:
 					update_variants(variants, self, publish_progress=False)
-					frappe.msgprint(_("Item Variants updated"))
+					frappe.msgprint(_("Item Variants updated"), alert = True)
 				else:
 					frappe.enqueue(
 						"erpnext.stock.doctype.item.item.update_variants",

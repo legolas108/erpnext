@@ -174,16 +174,30 @@ class BOM(WebsiteGenerator):
 	def autoname(self):
 		# ignore amended documents while calculating current index
 
-		search_key = f"{self.doctype}-{self.item}%"
-		existing_boms = frappe.get_all(
-			"BOM", filters={"name": search_key, "amended_from": ["is", "not set"]}, pluck="name"
-		)
+		prefix = self.doctype
+		op = f"-{self.operations[0].operation}" if len(self.operations) > 0 else ""
+		pot_sz_ex = ""
+		for item in self.items:
+			n = item.item_code.find("-") if re.match("^(A|P|(TS))[0-9]+-[^-]+$", item.item_code) else -1
+			if (n > -1):
+				pot_sz = item.item_code[n + 1:]
+				if ((op != "-Cutting") or (pot_sz != "Stk")):
+					pot_sz_ex = f"-{pot_sz}"
+					break
 
+		if ((pot_sz_ex == "") and self.custom_followup_bom):
+			tokens = self.custom_followup_bom.split("-")
+			pot_sz_ex = f"-{tokens[2]}"
+
+		label = f"{prefix}-{self.item}{op}{pot_sz_ex}"
+
+		existing_boms = frappe.get_all(
+			"BOM", filters={"name": ("like", f"{label}%"), "amended_from": ["is", "not set"]}, pluck="name"
+		)
 		index = self.get_index_for_bom(existing_boms)
 
-		prefix = self.doctype
 		suffix = "%.3i" % index  # convert index to string (1 -> "001")
-		bom_name = f"{prefix}-{self.item}-{suffix}"
+		bom_name = f"{label}-{suffix}"
 
 		if len(bom_name) <= 140:
 			name = bom_name
@@ -191,7 +205,7 @@ class BOM(WebsiteGenerator):
 			# since max characters for name is 140, remove enough characters from the
 			# item name to fit the prefix, suffix and the separators
 			truncated_length = 140 - (len(prefix) + len(suffix) + 2)
-			truncated_item_name = self.item[:truncated_length]
+			truncated_item_name = f"{self.item}{op}"[:truncated_length]
 			# if a partial word is found after truncate, remove the extra characters
 			truncated_item_name = truncated_item_name.rsplit(" ", 1)[0]
 			name = f"{prefix}-{truncated_item_name}-{suffix}"
@@ -1497,14 +1511,21 @@ def get_bom_diff(bom1, bom2):
 def item_query(doctype, txt, searchfield, start, page_len, filters):
 	meta = frappe.get_meta("Item", cached=True)
 	searchfields = meta.get_search_fields()
-
-	order_by = "idx desc, name, item_name"
-
-	fields = ["name", "item_name", "item_group", "description"]
-	fields.extend([field for field in searchfields if field not in ["name", "item_group", "description"]])
-
+	if "description" in searchfields:
+		searchfields.remove("description")
 	if not searchfields:
 		searchfields = ["name"]
+
+	order_by = "custom_full_name"
+
+	fields = ["name", "custom_full_name", "item_group"]
+	fields.extend([field for field in searchfields if field not in fields])
+
+	searchfields += [
+		field
+		for field in [searchfield or "name", "item_code", "item_group", "custom_full_name"]
+		if field not in searchfields
+	]
 
 	query_filters = {"disabled": 0, "ifnull(end_of_life, '3099-12-31')": (">", today())}
 

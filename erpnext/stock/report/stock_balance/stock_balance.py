@@ -238,6 +238,7 @@ class StockBalanceReport:
 				"currency": self.company_currency,
 				"stock_uom": entry.stock_uom,
 				"item_name": entry.item_name,
+				"item_full_name": entry.custom_full_name,
 				"opening_qty": opening_data.get("bal_qty") or 0.0,
 				"opening_val": opening_data.get("bal_val") or 0.0,
 				"opening_fifo_queue": opening_data.get("fifo_queue") or [],
@@ -316,6 +317,7 @@ class StockBalanceReport:
 				item_table.item_group,
 				item_table.stock_uom,
 				item_table.item_name,
+				item_table.custom_full_name,
 			)
 			.where((sle.docstatus < 2) & (sle.is_cancelled == 0))
 			.orderby(sle.posting_datetime)
@@ -387,22 +389,22 @@ class StockBalanceReport:
 				"fieldname": "item_code",
 				"fieldtype": "Link",
 				"options": "Item",
-				"width": 100,
+				"width": 150,
 			},
-			{"label": _("Item Name"), "fieldname": "item_name", "width": 150},
+			{"label": _("Item Full Name"), "fieldname": "item_full_name", "width": 400},
 			{
 				"label": _("Item Group"),
 				"fieldname": "item_group",
 				"fieldtype": "Link",
 				"options": "Item Group",
-				"width": 100,
+				"width": 120,
 			},
 			{
 				"label": _("Warehouse"),
 				"fieldname": "warehouse",
 				"fieldtype": "Link",
 				"options": "Warehouse",
-				"width": 100,
+				"width": 150,
 			},
 		]
 
@@ -425,7 +427,17 @@ class StockBalanceReport:
 					"fieldname": "stock_uom",
 					"fieldtype": "Link",
 					"options": "UOM",
-					"width": 90,
+					"width": 100,
+				},
+				{
+					"label": _("Valuation Rate"),
+					"fieldname": "val_rate",
+					"fieldtype": self.filters.valuation_field_type or "Currency",
+					"width": 100,
+					"convertible": "rate",
+					"options": "Company:company:default_currency"
+					if self.filters.valuation_field_type == "Currency"
+					else None,
 				},
 				{
 					"label": _("Balance Qty"),
@@ -438,7 +450,7 @@ class StockBalanceReport:
 					"label": _("Balance Value"),
 					"fieldname": "bal_val",
 					"fieldtype": "Currency",
-					"width": 100,
+					"width": 120,
 					"options": "Company:company:default_currency",
 				},
 				{
@@ -452,49 +464,39 @@ class StockBalanceReport:
 					"label": _("Opening Value"),
 					"fieldname": "opening_val",
 					"fieldtype": "Currency",
-					"width": 110,
+					"width": 120,
 					"options": "Company:company:default_currency",
 				},
 				{
 					"label": _("In Qty"),
 					"fieldname": "in_qty",
 					"fieldtype": "Float",
-					"width": 80,
+					"width": 100,
 					"convertible": "qty",
 				},
-				{"label": _("In Value"), "fieldname": "in_val", "fieldtype": "Float", "width": 80},
+				{"label": _("In Value"), "fieldname": "in_val", "fieldtype": "Float", "width": 120},
 				{
 					"label": _("Out Qty"),
 					"fieldname": "out_qty",
 					"fieldtype": "Float",
-					"width": 80,
-					"convertible": "qty",
-				},
-				{"label": _("Out Value"), "fieldname": "out_val", "fieldtype": "Float", "width": 80},
-				{
-					"label": _("Valuation Rate"),
-					"fieldname": "val_rate",
-					"fieldtype": self.filters.valuation_field_type or "Currency",
-					"width": 90,
-					"convertible": "rate",
-					"options": "Company:company:default_currency"
-					if self.filters.valuation_field_type == "Currency"
-					else None,
-				},
-				{
-					"label": _("Reserved Stock"),
-					"fieldname": "reserved_stock",
-					"fieldtype": "Float",
-					"width": 80,
-					"convertible": "qty",
-				},
-				{
-					"label": _("Company"),
-					"fieldname": "company",
-					"fieldtype": "Link",
-					"options": "Company",
 					"width": 100,
+					"convertible": "qty",
 				},
+				{"label": _("Out Value"), "fieldname": "out_val", "fieldtype": "Float", "width": 120},
+				# {
+				# 	"label": _("Reserved Stock"),
+				# 	"fieldname": "reserved_stock",
+				# 	"fieldtype": "Float",
+				# 	"width": 80,
+				# 	"convertible": "qty",
+				# },
+				# {
+				# 	"label": _("Company"),
+				# 	"fieldname": "company",
+				# 	"fieldtype": "Link",
+				# 	"options": "Company",
+				# 	"width": 100,
+				# },
 			]
 		)
 
@@ -627,6 +629,7 @@ def filter_items_with_no_transactions(
 				"item_code",
 				"warehouse",
 				"item_name",
+				"item_full_name",
 				"item_group",
 				"project",
 				"stock_uom",

@@ -3,14 +3,14 @@
 
 frappe.query_reports["Stock Balance"] = {
 	filters: [
-		{
-			fieldname: "company",
-			label: __("Company"),
-			fieldtype: "Link",
-			width: "80",
-			options: "Company",
-			default: frappe.defaults.get_default("company"),
-		},
+		// {
+		// 	fieldname: "company",
+		// 	label: __("Company"),
+		// 	fieldtype: "Link",
+		// 	width: "80",
+		// 	options: "Company",
+		// 	default: frappe.defaults.get_default("company"),
+		// },
 		{
 			fieldname: "from_date",
 			label: __("From Date"),
@@ -70,55 +70,55 @@ frappe.query_reports["Stock Balance"] = {
 				};
 			},
 		},
-		{
-			fieldname: "warehouse_type",
-			label: __("Warehouse Type"),
-			fieldtype: "Link",
-			width: "80",
-			options: "Warehouse Type",
-		},
-		{
-			fieldname: "valuation_field_type",
-			label: __("Valuation Field Type"),
-			fieldtype: "Select",
-			width: "80",
-			options: "Currency\nFloat",
-			default: "Currency",
-		},
-		{
-			fieldname: "include_uom",
-			label: __("Include UOM"),
-			fieldtype: "Link",
-			options: "UOM",
-		},
-		{
-			fieldname: "show_variant_attributes",
-			label: __("Show Variant Attributes"),
-			fieldtype: "Check",
-		},
-		{
-			fieldname: "show_stock_ageing_data",
-			label: __("Show Stock Ageing Data"),
-			fieldtype: "Check",
-		},
-		{
-			fieldname: "ignore_closing_balance",
-			label: __("Ignore Closing Balance"),
-			fieldtype: "Check",
-			default: 0,
-		},
+		// {
+		// 	fieldname: "warehouse_type",
+		// 	label: __("Warehouse Type"),
+		// 	fieldtype: "Link",
+		// 	width: "80",
+		// 	options: "Warehouse Type",
+		// },
+		// {
+		// 	fieldname: "valuation_field_type",
+		// 	label: __("Valuation Field Type"),
+		// 	fieldtype: "Select",
+		// 	width: "80",
+		// 	options: "Currency\nFloat",
+		// 	default: "Currency",
+		// },
+		// {
+		// 	fieldname: "include_uom",
+		// 	label: __("Include UOM"),
+		// 	fieldtype: "Link",
+		// 	options: "UOM",
+		// },
+		// {
+		// 	fieldname: "show_variant_attributes",
+		// 	label: __("Show Variant Attributes"),
+		// 	fieldtype: "Check",
+		// },
+		// {
+		// 	fieldname: "show_stock_ageing_data",
+		// 	label: __("Show Stock Ageing Data"),
+		// 	fieldtype: "Check",
+		// },
+		// {
+		// 	fieldname: "ignore_closing_balance",
+		// 	label: __("Ignore Closing Balance"),
+		// 	fieldtype: "Check",
+		// 	default: 0,
+		// },
 		{
 			fieldname: "include_zero_stock_items",
 			label: __("Include Zero Stock Items"),
 			fieldtype: "Check",
 			default: 0,
 		},
-		{
-			fieldname: "show_dimension_wise_stock",
-			label: __("Show Dimension Wise Stock"),
-			fieldtype: "Check",
-			default: 0,
-		},
+		// {
+		// 	fieldname: "show_dimension_wise_stock",
+		// 	label: __("Show Dimension Wise Stock"),
+		// 	fieldtype: "Check",
+		// 	default: 0,
+		// },
 	],
 
 	formatter: function (value, row, column, data, default_formatter) {

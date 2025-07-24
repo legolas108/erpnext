@@ -1,6 +1,7 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
 # License: GNU General Public License v3. See license.txt
 
+from datetime import datetime
 
 import frappe
 from frappe import _, bold, json, msgprint
@@ -59,6 +60,11 @@ class StockReconciliation(StockController):
 	def __init__(self, *args, **kwargs):
 		super().__init__(*args, **kwargs)
 		self.head_row = ["Item Code", "Warehouse", "Quantity", "Valuation Rate"]
+
+	def autoname(self):
+		yr = datetime.today().strftime("%Y")
+		id = "{:03d}".format(frappe.db.sql(f"select nextval(`sStock Reconciliation {yr}`)", as_dict = 0)[0][0])
+		self.name = f"SR-{yr}-{id}"
 
 	def validate(self):
 		self.validate_items_exist()

@@ -201,21 +201,27 @@ def update_available_serial_nos(available_serial_nos, sle):
 
 def get_columns(filters):
 	columns = [
-		{"label": _("Date"), "fieldname": "date", "fieldtype": "Datetime", "width": 150},
 		{
 			"label": _("Item"),
 			"fieldname": "item_code",
 			"fieldtype": "Link",
 			"options": "Item",
+			"width": 150,
+		},
+		{"label": _("Item Full Name"), "fieldname": "custom_item_full_name", "width": 400},
+		{
+			"label": _("Item Group"),
+			"fieldname": "item_group",
+			"fieldtype": "Link",
+			"options": "Item Group",
 			"width": 100,
 		},
-		{"label": _("Item Name"), "fieldname": "item_name", "width": 100},
 		{
 			"label": _("Stock UOM"),
 			"fieldname": "stock_uom",
 			"fieldtype": "Link",
 			"options": "UOM",
-			"width": 90,
+			"width": 80,
 		},
 	]
 
@@ -253,6 +259,7 @@ def get_columns(filters):
 				"width": 100,
 				"convertible": "qty",
 			},
+			{"label": _("Date"), "fieldname": "date", "fieldtype": "Datetime", "width": 150},
 			{
 				"label": _("Warehouse"),
 				"fieldname": "warehouse",
@@ -261,43 +268,36 @@ def get_columns(filters):
 				"width": 150,
 			},
 			{
-				"label": _("Item Group"),
-				"fieldname": "item_group",
-				"fieldtype": "Link",
-				"options": "Item Group",
-				"width": 100,
-			},
-			{
 				"label": _("Brand"),
 				"fieldname": "brand",
 				"fieldtype": "Link",
 				"options": "Brand",
-				"width": 100,
+				"width": 150,
 			},
-			{"label": _("Description"), "fieldname": "description", "width": 200},
+			# {"label": _("Description"), "fieldname": "description", "width": 200},
 			{
 				"label": _("Incoming Rate"),
 				"fieldname": "incoming_rate",
 				"fieldtype": "Currency",
-				"width": 110,
+				"width": 120,
 				"options": "Company:company:default_currency",
 				"convertible": "rate",
 			},
-			{
-				"label": _("Avg Rate (Balance Stock)"),
-				"fieldname": "valuation_rate",
-				"fieldtype": filters.valuation_field_type,
-				"width": 180,
-				"options": "Company:company:default_currency"
-				if filters.valuation_field_type == "Currency"
-				else None,
-				"convertible": "rate",
-			},
+			# {
+			# 	"label": _("Avg Rate (Balance Stock)"),
+			# 	"fieldname": "valuation_rate",
+			# 	"fieldtype": filters.valuation_field_type,
+			# 	"width": 180,
+			# 	"options": "Company:company:default_currency"
+			# 	if filters.valuation_field_type == "Currency"
+			# 	else None,
+			# 	"convertible": "rate",
+			# },
 			{
 				"label": _("Valuation Rate"),
 				"fieldname": "in_out_rate",
 				"fieldtype": filters.valuation_field_type,
-				"width": 140,
+				"width": 120,
 				"options": "Company:company:default_currency"
 				if filters.valuation_field_type == "Currency"
 				else None,
@@ -307,14 +307,14 @@ def get_columns(filters):
 				"label": _("Balance Value"),
 				"fieldname": "stock_value",
 				"fieldtype": "Currency",
-				"width": 110,
+				"width": 120,
 				"options": "Company:company:default_currency",
 			},
 			{
 				"label": _("Value Change"),
 				"fieldname": "stock_value_difference",
 				"fieldtype": "Currency",
-				"width": 110,
+				"width": 120,
 				"options": "Company:company:default_currency",
 			},
 			{"label": _("Voucher Type"), "fieldname": "voucher_type", "width": 110},
@@ -323,43 +323,43 @@ def get_columns(filters):
 				"fieldname": "voucher_no",
 				"fieldtype": "Dynamic Link",
 				"options": "voucher_type",
-				"width": 100,
+				"width": 140,
 			},
-			{
-				"label": _("Batch"),
-				"fieldname": "batch_no",
-				"fieldtype": "Link",
-				"options": "Batch",
-				"width": 100,
-			},
-			{
-				"label": _("Serial No"),
-				"fieldname": "serial_no",
-				"fieldtype": "Link",
-				"options": "Serial No",
-				"width": 100,
-			},
-			{
-				"label": _("Serial and Batch Bundle"),
-				"fieldname": "serial_and_batch_bundle",
-				"fieldtype": "Link",
-				"options": "Serial and Batch Bundle",
-				"width": 100,
-			},
-			{
-				"label": _("Project"),
-				"fieldname": "project",
-				"fieldtype": "Link",
-				"options": "Project",
-				"width": 100,
-			},
-			{
-				"label": _("Company"),
-				"fieldname": "company",
-				"fieldtype": "Link",
-				"options": "Company",
-				"width": 110,
-			},
+			# {
+			# 	"label": _("Batch"),
+			# 	"fieldname": "batch_no",
+			# 	"fieldtype": "Link",
+			# 	"options": "Batch",
+			# 	"width": 100,
+			# },
+			# {
+			# 	"label": _("Serial No"),
+			# 	"fieldname": "serial_no",
+			# 	"fieldtype": "Link",
+			# 	"options": "Serial No",
+			# 	"width": 100,
+			# },
+			# {
+			# 	"label": _("Serial and Batch Bundle"),
+			# 	"fieldname": "serial_and_batch_bundle",
+			# 	"fieldtype": "Link",
+			# 	"options": "Serial and Batch Bundle",
+			# 	"width": 100,
+			# },
+			# {
+			# 	"label": _("Project"),
+			# 	"fieldname": "project",
+			# 	"fieldtype": "Link",
+			# 	"options": "Project",
+			# 	"width": 100,
+			# },
+			# {
+			# 	"label": _("Company"),
+			# 	"fieldname": "company",
+			# 	"fieldtype": "Link",
+			# 	"options": "Company",
+			# 	"width": 110,
+			# },
 		]
 	)
 
@@ -375,6 +375,7 @@ def get_stock_ledger_entries(filters, items):
 		frappe.qb.from_(sle)
 		.select(
 			sle.item_code,
+			sle.custom_item_full_name,
 			sle.posting_datetime.as_("date"),
 			sle.warehouse,
 			sle.posting_date,

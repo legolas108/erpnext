@@ -43,6 +43,10 @@ class ItemPrice(Document):
 		valid_upto: DF.Date | None
 	# end: auto-generated types
 
+	def autoname(self):
+		id = "{:06d}".format(frappe.db.sql(f"select nextval(`sItem Price`)", as_dict = 0)[0][0])
+		self.name = f"{self.item_code}-{id}"
+
 	def validate(self):
 		self.validate_item()
 		self.validate_from_to_dates("valid_from", "valid_upto")
