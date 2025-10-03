@@ -24,8 +24,8 @@ erpnext.utils.BarcodeScanner = class BarcodeScanner {
 
 		// optional sound name to play when scan either fails or passes.
 		// see https://frappeframework.com/docs/v14/user/en/python-api/hooks#sounds
-		this.success_sound = opts.play_success_sound;
-		this.fail_sound = opts.play_fail_sound;
+		this.success_sound = opts.play_success_sound || "success";
+		this.fail_sound = opts.play_fail_sound || "failure";
 
 		// any API that takes `search_value` as input and returns dictionary as follows
 		// {
@@ -38,17 +38,35 @@ erpnext.utils.BarcodeScanner = class BarcodeScanner {
 		// }
 		this.scan_api = opts.scan_api || "erpnext.stock.utils.scan_barcode";
 		this.has_last_scanned_warehouse = frappe.meta.has_field(this.frm.doctype, "last_scanned_warehouse");
+
+		this.playSound = opts.playSound || (opts.playSound === undefined);
 	}
 
 	process_scan() {
 		return new Promise((resolve, reject) => {
 			let me = this;
 
-			const input = this.scan_barcode_field.value;
+			let input = this.scan_barcode_field.value;
 			this.scan_barcode_field.set_value("");
-			if (!input) {
+			if (!input)
+				return;
+
+			if (input.match(/^S[01]$/)) {
+				this.setSingle(Number(input.substr(1)));
+				this.play_success_sound();
+				return;
+			} else if (input === "Undo") {
+				this.play_fail_sound();
+				return;
+			} else if (input === "Reset") {
+				let q = this.frm.fields_dict.custom_qty;
+				if (q && q.input)
+					this.frm.set_value("custom_qty", 1);
+				$("input[data-fieldname='scan_barcode']").focus();
+				this.play_success_sound();
 				return;
 			}
+			input = input.match(/^[0-9]{1,12}$/)? input.padStart(13, "0"): input;
 
 			this.scan_api_call(input, (r) => {
 				const data = r && r.message;
@@ -79,15 +97,22 @@ erpnext.utils.BarcodeScanner = class BarcodeScanner {
 
 				me.update_table(data)
 					.then((row) => {
-						this.play_success_sound();
+						if (me.playSound)
+							this.play_success_sound();
 						resolve(row);
 					})
 					.catch(() => {
-						this.play_fail_sound();
+						if (me.playSound)
+							this.play_fail_sound();
 						reject();
 					});
 			});
 		});
+	}
+
+	setSingle(on) {
+		if (this.frm.fields_dict.custom_single_count_mode?.input)
+			this.frm.set_value("custom_single_count_mode", on);
 	}
 
 	scan_api_call(input, callback) {
@@ -139,8 +164,9 @@ erpnext.utils.BarcodeScanner = class BarcodeScanner {
 			frappe.run_serially([
 				() => this.set_selector_trigger_flag(data),
 				() =>
-					this.set_item(row, item_code, barcode, batch_no, serial_no).then((qty) => {
-						this.show_scan_message(row.idx, !is_new_row, qty);
+					this.set_item(row, item_code, barcode, batch_no, serial_no, is_new_row).then((qty) => {
+						if (qty !== 0)
+							this.show_scan_message(row.idx, !is_new_row, qty);
 					}),
 				() => this.set_barcode_uom(row, uom),
 				() => this.set_serial_no(row, serial_no),
@@ -154,7 +180,7 @@ erpnext.utils.BarcodeScanner = class BarcodeScanner {
 		});
 	}
 
-	// batch and serial selector is reduandant when all info can be added by scan
+	// batch and serial selector is redundant when all info can be added by scan
 	// this flag on item row is used by transaction.js to avoid triggering selector
 	set_selector_trigger_flag(data) {
 		const { batch_no, serial_no, has_batch_no, has_serial_no } = data;
@@ -172,7 +198,7 @@ erpnext.utils.BarcodeScanner = class BarcodeScanner {
 		frappe.flags.trigger_from_barcode_scanner = false;
 	}
 
-	set_item(row, item_code, barcode, batch_no, serial_no) {
+	set_item(row, item_code, barcode, batch_no, serial_no, is_new_row) {
 		return new Promise((resolve) => {
 			const increment = async (value = 1) => {
 				const item_data = { item_code: item_code, use_serial_batch_fields: 1.0 };
@@ -186,6 +212,12 @@ erpnext.utils.BarcodeScanner = class BarcodeScanner {
 				frappe.prompt(__("Please enter quantity for item {0}", [item_code]), ({ value }) => {
 					increment(value).then((value) => resolve(value));
 				});
+			} else if (this.frm.fields_dict.custom_single_count_mode?.input) {
+				if (this.frm.fields_dict.custom_single_count_mode.value !== 1)
+					$("input[data-fieldname='custom_qty']").focus();
+				this.frm.curItem = row;
+				this.frm.curItemIsNew = is_new_row;
+				increment(0).then((value) => resolve(value));
 			} else if (this.frm.has_items) {
 				this.prepare_item_for_scan(row, item_code, barcode, batch_no, serial_no);
 			} else {
@@ -454,7 +486,7 @@ erpnext.utils.BarcodeScanner = class BarcodeScanner {
 		const matching_row = (row) => {
 			const item_match = row.item_code == item_code;
 			const batch_match = !row[this.batch_no_field] || row[this.batch_no_field] == batch_no;
-			const uom_match = !uom || row[this.uom_field] == uom;
+			const uom_match = !uom || !row[this.uom_field] || row[this.uom_field] == uom;
 			const qty_in_limit = flt(row[this.qty_field]) < flt(row[this.max_qty_field]);
 			const item_scanned = row.has_item_scanned;
 

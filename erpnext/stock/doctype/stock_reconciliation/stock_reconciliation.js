@@ -4,10 +4,13 @@
 frappe.provide("erpnext.stock");
 frappe.provide("erpnext.accounts.dimensions");
 
+var processBarcode = false;
+var processQty = false;
+
 frappe.ui.form.on("Stock Reconciliation", {
 	setup(frm) {
 		frm.ignore_doctypes_on_cancel_all = ["Serial and Batch Bundle"];
-		frm.barcode_scanner = new erpnext.utils.BarcodeScanner({ frm });
+		frm.barcode_scanner = new erpnext.utils.BarcodeScanner({ frm: frm, playSound: false });
 	},
 
 	onload: function (frm) {
@@ -84,6 +87,46 @@ frappe.ui.form.on("Stock Reconciliation", {
 		}
 
 		frm.events.set_fields_onload_for_line_item(frm);
+
+		let barcodeInput = frm.get_field("scan_barcode").$input;
+		barcodeInput.on("keydown", (ev) => {
+			if (ev.key === "Enter")
+				processBarcode = true;
+		});
+		barcodeInput.on("keypress", (ev) => {
+			if (processBarcode)
+				setTimeout(() => {
+					frm.barcode_scanner.process_scan().then(() => {
+						if (frm.doc.custom_single_count_mode === 1)
+							doProcessBarcode(frm);
+						else
+							frappe.utils.play_sound("item-found");
+					});
+					processBarcode = false;
+				}, 0);
+		});
+
+		let qtyInput = frm.get_field("custom_qty").$input;
+		qtyInput.on("keydown", (ev) => {
+			if (ev.key === "Enter")
+				processQty = true;
+		});
+		qtyInput.on("keypress", (ev) => {
+			if (processQty)
+				setTimeout(() => {
+					if (frm.doc.custom_qty === "Reset") {
+						if (frm.curItemIsNew)
+							removeRow(frm, frm.curItem.idx, "success");
+						else
+							frappe.utils.play_sound("success");
+						resetCurItem(frm);
+						resetQty(frm);
+					} else {
+						doProcessBarcode(frm);
+						resetQty(frm);
+					}
+				}, 0);
+		});
 	},
 
 	set_fields_onload_for_line_item(frm) {
@@ -97,7 +140,6 @@ frappe.ui.form.on("Stock Reconciliation", {
 	},
 
 	scan_barcode: function (frm) {
-		frm.barcode_scanner.process_scan();
 	},
 
 	scan_mode: function (frm) {
@@ -107,6 +149,11 @@ frappe.ui.form.on("Stock Reconciliation", {
 				indicator: "green",
 			});
 		}
+	},
+
+	custom_single_count_mode: (frm) => {
+		frm.set_value("custom_qty", 1);
+		$("[data-fieldname='scan_barcode']").focus();
 	},
 
 	set_warehouse: function (frm) {
@@ -214,11 +261,21 @@ frappe.ui.form.on("Stock Reconciliation", {
 					if (!frm.doc.scan_mode) {
 						frappe.model.set_value(cdt, cdn, "qty", r.message.qty);
 					}
-					frappe.model.set_value(cdt, cdn, "valuation_rate", r.message.rate);
+
+					if (r.message.rate < 0.01) {
+						frappe.db.get_value("Item", d.item_code, "valuation_rate")
+							.then(r => {
+								frappe.model.set_value(cdt, cdn, "valuation_rate", r.message.valuation_rate);
+								frappe.model.set_value(cdt, cdn, "amount", row.qty * row.valuation_rate);
+							});
+					} else {
+						frappe.model.set_value(cdt, cdn, "valuation_rate", r.message.rate);
+						frappe.model.set_value(cdt, cdn, "amount", row.qty * row.valuation_rate);
+					}
+
 					frappe.model.set_value(cdt, cdn, "current_qty", r.message.qty);
 					frappe.model.set_value(cdt, cdn, "current_valuation_rate", r.message.rate);
 					frappe.model.set_value(cdt, cdn, "current_amount", r.message.rate * r.message.qty);
-					frappe.model.set_value(cdt, cdn, "amount", row.qty * row.valuation_rate);
 					frappe.model.set_value(cdt, cdn, "current_serial_no", r.message.serial_nos);
 					frappe.model.set_value(
 						cdt,
@@ -385,5 +442,45 @@ erpnext.stock.StockReconciliation = class StockReconciliation extends erpnext.st
 		}
 	}
 };
+
+function doProcessBarcode(frm) {
+	if (!frm.curItem)
+		return;
+
+	let qty = Math.max((frm.curItemIsNew? 0: frm.curItem.qty) + frm.doc.custom_qty, 0);
+	if (frm.doc.custom_qty >= 1000) {
+		// scanned barcode into quantity field
+		if (frm.curItemIsNew)
+			removeRow(frm, frm.curItem.idx, "failure");
+		else
+			frappe.utils.play_sound("failure");
+	} else if (qty > 0) {
+		frappe.model.set_value(frm.curItem.doctype, frm.curItem.name, "qty", qty);
+		frm.save().then(() => frappe.utils.play_sound("success"));
+	} else // qty <= 0
+		removeRow(frm, frm.curItem.idx, "success");
+
+	resetCurItem(frm);
+}
+
+function resetCurItem(frm) {
+	frm.curItem = undefined;
+	frm.curItemIsNew = undefined;
+}
+
+function resetQty(frm) {
+	frm.set_value("custom_qty", 1);
+	$("[data-fieldname='scan_barcode']").focus();
+	processQty = false;
+}
+
+function removeRow(frm, idx, sound) {
+	for (let n = 0; n < frm.doc.items.length; n++)
+		if (frm.doc.items[n].idx === idx) {
+			frm.fields_dict["items"].grid.grid_rows[n].remove();
+			frm.save().then(() => frappe.utils.play_sound(sound));
+			break;
+		}
+}
 
 cur_frm.cscript = new erpnext.stock.StockReconciliation({ frm: cur_frm });
