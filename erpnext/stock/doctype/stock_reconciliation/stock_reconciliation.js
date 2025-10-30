@@ -10,7 +10,11 @@ var processQty = false;
 frappe.ui.form.on("Stock Reconciliation", {
 	setup(frm) {
 		frm.ignore_doctypes_on_cancel_all = ["Serial and Batch Bundle"];
-		frm.barcode_scanner = new erpnext.utils.BarcodeScanner({ frm: frm, playSound: false });
+		frm.barcode_scanner = new erpnext.utils.BarcodeScanner({
+			frm: frm,
+			uom_field: "stock_uom",
+			playSound: false,
+		});
 	},
 
 	onload: function (frm) {
