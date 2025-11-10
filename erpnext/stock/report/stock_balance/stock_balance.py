@@ -432,6 +432,13 @@ class StockBalanceReport:
 					"width": 100,
 				},
 				{
+					"label": _("Balance Qty"),
+					"fieldname": "bal_qty",
+					"fieldtype": "Float",
+					"width": 100,
+					"convertible": "qty",
+				},
+				{
 					"label": _("Valuation Rate"),
 					"fieldname": "val_rate",
 					"fieldtype": self.filters.valuation_field_type or "Currency",
@@ -440,13 +447,6 @@ class StockBalanceReport:
 					"options": "Company:company:default_currency"
 					if self.filters.valuation_field_type == "Currency"
 					else None,
-				},
-				{
-					"label": _("Balance Qty"),
-					"fieldname": "bal_qty",
-					"fieldtype": "Float",
-					"width": 100,
-					"convertible": "qty",
 				},
 				{
 					"label": _("Balance Value"),
