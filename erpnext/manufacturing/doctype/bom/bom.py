@@ -182,7 +182,7 @@ class BOM(WebsiteGenerator):
 			n = item.item_code.find("-") if re.match("^(A|P|(TS))[0-9]+-[^-]+$", item.item_code) else -1
 			if (n > -1):
 				pot_sz = item.item_code[n + 1:]
-				if ((op != "-Cutting") or (pot_sz != "Stk")):
+				if ((op != "-Cutting") or (pot_sz != "Stk")) and (pot_sz not in ["Sd", "Tg"]):
 					pot_sz_ex = f"-{pot_sz}"
 					break
 
