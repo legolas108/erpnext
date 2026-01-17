@@ -62,7 +62,7 @@ class StockReconciliation(StockController):
 		self.head_row = ["Item Code", "Warehouse", "Quantity", "Valuation Rate"]
 
 	def autoname(self):
-		yr = datetime.today().strftime("%Y")
+		yr = self.posting_date[0:4]
 		id = "{:03d}".format(frappe.db.sql(f"select nextval(`sStock Reconciliation {yr}`)", as_dict = 0)[0][0])
 		self.name = f"SR-{yr}-{id}"
 
