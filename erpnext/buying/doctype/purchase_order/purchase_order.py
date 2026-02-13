@@ -184,6 +184,10 @@ class PurchaseOrder(BuyingController):
 			}
 		]
 
+	def autoname(self):
+		id = "{:03d}".format(frappe.db.sql(f"select nextval(`sPurchase Order {self.custom_season}`)", as_dict = 0)[0][0])
+		self.name = f"PO-{self.supplier}-{self.custom_season}-{id}"
+
 	def onload(self):
 		self.set_onload("can_update_items", self.can_update_items())
 

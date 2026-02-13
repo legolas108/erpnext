@@ -349,6 +349,11 @@ def copy_attributes_to_variant(item, variant):
 						if row.get("name"):
 							row.name = None
 						variant.append(field.fieldname, row)
+				elif field.fieldtype == "Table MultiSelect":
+					tbl = item.get(field.fieldname)
+					for row in tbl:
+						row.name = None  # force creation of new name
+					variant.set(field.fieldname, tbl)
 				else:
 					variant.set(field.fieldname, item.get(field.fieldname))
 
@@ -376,9 +381,10 @@ def make_variant_item_code(template_item_code, template_item_name, variant):
 		return
 
 	abbreviations = []
+	labels = []
 	for attr in variant.attributes:
 		item_attribute = frappe.db.sql(
-			"""select i.numeric_values, v.abbr
+			"""select i.numeric_values, v.abbr, v.attribute_value as label
 			from `tabItem Attribute` i left join `tabItem Attribute Value` v
 				on (i.name=v.parent)
 			where i.name=%(attribute)s and (v.attribute_value=%(attribute_value)s or i.numeric_values = 1)""",
@@ -397,9 +403,15 @@ def make_variant_item_code(template_item_code, template_item_name, variant):
 		)
 		abbreviations.append(abbr_or_value)
 
+		label_or_value = (
+			cstr(attr.attribute_value) if item_attribute[0].numeric_values else item_attribute[0].label
+		)
+		labels.append(label_or_value)
+
 	if abbreviations:
 		variant.item_code = "{}-{}".format(template_item_code, "-".join(abbreviations))
-		variant.item_name = "{}-{}".format(template_item_name, "-".join(abbreviations))
+	if labels:
+		variant.item_name = "{} - {}".format(template_item_name, ", ".join(labels))
 
 
 @frappe.whitelist()

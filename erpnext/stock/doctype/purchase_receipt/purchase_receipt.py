@@ -242,6 +242,10 @@ class PurchaseReceipt(BuyingController):
 				]
 			)
 
+	def autoname(self):
+		id = "{:03d}".format(frappe.db.sql(f"select nextval(`sPurchase Receipt {self.custom_season}`)", as_dict = 0)[0][0])
+		self.name = f"PR-{self.supplier}-{self.custom_season}-{id}"
+
 	def before_validate(self):
 		from erpnext.stock.doctype.putaway_rule.putaway_rule import apply_putaway_rule
 

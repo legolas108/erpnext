@@ -2,6 +2,7 @@
 # License: GNU General Public License v3. See license.txt
 
 import json
+import re
 from collections import defaultdict
 
 import frappe
@@ -148,6 +149,13 @@ class WorkOrder(Document):
 		use_multi_level_bom: DF.Check
 		wip_warehouse: DF.Link | None
 	# end: auto-generated types
+
+	def autoname(self):
+		self.custom_operation = self.operations[0].operation if len(self.operations) > 0 else ""
+
+		name = re.sub("^BOM", "WO", self.bom_no)
+		id = "{:04d}".format(frappe.db.sql(f"select nextval(`sWork Order {self.custom_season}`)", as_dict = 0)[0][0])
+		self.name = re.sub("-[0-9]+$", f"-{self.custom_season}-{id}", name)
 
 	def onload(self):
 		ms = frappe.get_doc("Manufacturing Settings")
@@ -2227,7 +2235,7 @@ def get_item_details(item, project=None, skip_bom_info=False, throw=True):
 			)
 		else:
 			msg = _("Default BOM for {0} not found").format(item)
-			frappe.msgprint(msg, raise_exception=throw, indicator="yellow", alert=(not throw))
+			frappe.msgprint(msg, raise_exception=throw, indicator="yellow", alert = 1)
 
 			return res
 

@@ -1,6 +1,7 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
 # License: GNU General Public License v3. See license.txt
 
+from datetime import datetime
 
 import frappe
 from frappe import _, bold, json, msgprint
@@ -61,6 +62,11 @@ class StockReconciliation(StockController):
 		super().__init__(*args, **kwargs)
 		self.head_row = ["Item Code", "Warehouse", "Quantity", "Valuation Rate"]
 
+	def autoname(self):
+		yr = self.posting_date[0:4]
+		id = "{:03d}".format(frappe.db.sql(f"select nextval(`sStock Reconciliation {yr}`)", as_dict = 0)[0][0])
+		self.name = f"SR-{yr}-{id}"
+
 	def validate(self):
 		self.validate_items_exist()
 		if not self.expense_account:
@@ -73,7 +79,9 @@ class StockReconciliation(StockController):
 		self.set_current_serial_and_batch_bundle()
 		self.set_new_serial_and_batch_bundle()
 		self.validate_duplicate_serial_and_batch_bundle("items")
-		self.remove_items_with_no_change()
+		if self._action == "submit":
+			self.supplement_zero_qty_items()
+			self.remove_items_with_no_change()
 		self.validate_data()
 		self.change_row_indexes()
 		self.validate_expense_account()
@@ -476,6 +484,55 @@ class StockReconciliation(StockController):
 			}
 
 			frappe.db.set_value("Serial and Batch Entry", batch.name, update_values)
+
+	def supplement_zero_qty_items(self):
+		""" Add items from previous SRs not present on current SR with zero quantity. """
+		sris = frappe.db.sql(f"""
+			with sr2 as (
+				select `name`, cast(substring(`name`, 4, 4) as unsigned integer) as season, set_warehouse as wh
+				from `tabStock Reconciliation`
+				where (`name` = '{self.name}')
+			)
+			select sri.item_code, sri.warehouse, sri.barcode
+			from (`tabStock Reconciliation Item` sri inner join sr2
+					on (cast(substring(sri.parent, 4, 4) as unsigned integer) = sr2.season - 1) and
+						(sri.parenttype = 'Stock Reconciliation') and
+						(sri.warehouse = sr2.wh) and
+						(sri.docstatus = 1))
+				left join `tabStock Reconciliation Item` sri2
+					on (sri2.parent = sr2.`name`) and
+						(sri2.parenttype = sri.parenttype) and
+						(sri2.item_code = sri.item_code) and
+						(sri2.docstatus = 0)
+			where (sri2.`name` is null)
+			order by sri.item_code
+		""", as_dict = 1)
+
+		for sri in sris:
+			item = frappe.db.get_value("Item", sri.item_code,
+				["item_name", "valuation_rate", "item_group", "custom_full_name"],
+				as_dict = 1)
+
+			sriN = frappe.new_doc("Stock Reconciliation Item")
+
+			sriN.barcode = sri.barcode
+			sriN.item_code = sri.item_code
+			sriN.item_name = item.item_name
+			sriN.warehouse = sri.warehouse
+			sriN.qty = 0.0
+			sriN.valuation_rate = item.valuation_rate
+			sriN.amount = 0.0
+			sriN.allow_zero_valuation_rate = 0
+			sriN.use_serial_batch_fields = 1
+			sriN.quantity_difference = 0.0
+			sriN.amount_difference = 0.0
+			sriN.parent = self.name
+			sriN.parenttype = "Stock Reconciliation"
+			sriN.parentfield = "items"
+			sriN.item_group = item.item_group
+			sriN.custom_item_full_name = item.custom_full_name
+
+			self.items.append(sriN)
 
 	def remove_items_with_no_change(self):
 		from erpnext.stock.stock_ledger import get_stock_value_difference
