@@ -195,6 +195,9 @@ def reschedule_depreciation(asset_doc, notes, disposal_date=None):
 	for row in asset_doc.get("finance_books"):
 		current_schedule = get_asset_depr_schedule_doc(asset_doc.name, None, row.finance_book)
 
+		if disposal_date and flt(row.value_after_depreciation) <= flt(row.expected_value_after_useful_life):
+			continue
+
 		if current_schedule:
 			if current_schedule.docstatus == 1:
 				new_schedule = frappe.copy_doc(current_schedule)
@@ -272,6 +275,13 @@ def get_asset_shift_factors_map():
 
 
 @frappe.whitelist()
+def get_asset_depreciation_schedule(
+	asset_name: str, status: str | None = None, finance_book: str | None = None
+):
+	frappe.has_permission("Asset", "read", asset_name, throw=True)
+	return get_asset_depr_schedule_doc(asset_name, status, finance_book)
+
+
 def get_depr_schedule(asset_name, status, finance_book=None):
 	asset_depr_schedule_doc = get_asset_depr_schedule_doc(asset_name, status, finance_book)
 
@@ -281,7 +291,6 @@ def get_depr_schedule(asset_name, status, finance_book=None):
 	return asset_depr_schedule_doc.get("depreciation_schedule")
 
 
-@frappe.whitelist()
 def get_asset_depr_schedule_doc(asset_name, status=None, finance_book=None):
 	asset_depr_schedule = get_asset_depr_schedule_name(asset_name, status, finance_book)
 

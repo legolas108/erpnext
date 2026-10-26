@@ -3,12 +3,7 @@
 import unittest
 
 import frappe
-from frappe.tests import IntegrationTestCase
 
-from erpnext.accounts.doctype.accounting_dimension.test_accounting_dimension import (
-	create_dimension,
-	disable_dimension,
-)
 from erpnext.accounts.doctype.pos_closing_entry.pos_closing_entry import (
 	make_closing_entry_from_opening,
 )
@@ -22,26 +17,14 @@ from erpnext.stock.doctype.serial_and_batch_bundle.test_serial_and_batch_bundle 
 	get_batch_from_bundle,
 )
 from erpnext.stock.doctype.stock_entry.test_stock_entry import make_stock_entry
+from erpnext.tests.utils import ERPNextTestSuite
 
 
-class TestPOSClosingEntry(IntegrationTestCase):
-	@classmethod
-	def setUpClass(cls):
-		frappe.db.sql("delete from `tabPOS Opening Entry`")
-		cls.enterClassContext(cls.change_settings("POS Settings", {"invoice_type": "POS Invoice"}))
-
-	@classmethod
-	def tearDownClass(cls):
-		frappe.db.sql("delete from `tabPOS Opening Entry`")
-
+class TestPOSClosingEntry(ERPNextTestSuite):
 	def setUp(self):
-		# Make stock available for POS Sales
-		frappe.db.sql("delete from `tabPOS Opening Entry`")
+		self.test_user, self.pos_profile = init_user_and_profile()
 		make_stock_entry(target="_Test Warehouse - _TC", qty=2, basic_rate=100)
-
-	def tearDown(self):
-		frappe.set_user("Administrator")
-		frappe.db.sql("delete from `tabPOS Profile`")
+		frappe.db.set_single_value("POS Settings", "invoice_type", "POS Invoice")
 
 	def test_pos_closing_entry(self):
 		test_user, pos_profile = init_user_and_profile()
@@ -58,6 +41,7 @@ class TestPOSClosingEntry(IntegrationTestCase):
 		pos_inv2.submit()
 
 		pcv_doc = make_closing_entry_from_opening(opening_entry)
+		pcv_doc.flags.in_test = True
 		payment = pcv_doc.payment_reconciliation[0]
 
 		self.assertEqual(payment.mode_of_payment, "Cash")
@@ -66,6 +50,7 @@ class TestPOSClosingEntry(IntegrationTestCase):
 			if d.mode_of_payment == "Cash":
 				d.closing_amount = 6700
 
+		pcv_doc.flags.in_test = True
 		pcv_doc.submit()
 
 		self.assertEqual(pcv_doc.total_quantity, 2)
@@ -84,6 +69,7 @@ class TestPOSClosingEntry(IntegrationTestCase):
 		pos_inv.submit()
 
 		pcv_doc = make_closing_entry_from_opening(opening_entry)
+		pcv_doc.flags.in_test = True
 		pcv_doc.submit()
 
 		self.assertTrue(pcv_doc.name)
@@ -116,6 +102,7 @@ class TestPOSClosingEntry(IntegrationTestCase):
 		pos_return.submit()
 
 		pcv_doc = make_closing_entry_from_opening(opening_entry)
+		pcv_doc.flags.in_test = True
 		pcv_doc.submit()
 
 		opening_entry = create_opening_entry(pos_profile, test_user.name)
@@ -145,6 +132,7 @@ class TestPOSClosingEntry(IntegrationTestCase):
 			if d.mode_of_payment == "Cash":
 				d.closing_amount = 6700
 
+		pcv_doc.flags.in_test = True
 		pcv_doc.submit()
 
 		pos_inv1.load_from_db()
@@ -170,7 +158,6 @@ class TestPOSClosingEntry(IntegrationTestCase):
 		test case to check whether we can create POS Closing Entry without mandatory accounting dimension
 		"""
 
-		create_dimension()
 		location = frappe.get_doc("Accounting Dimension", "Location")
 		location.dimension_defaults[0].mandatory_for_bs = True
 		location.save()
@@ -198,6 +185,7 @@ class TestPOSClosingEntry(IntegrationTestCase):
 
 		pcv_doc = make_closing_entry_from_opening(opening_entry)
 		# will assert coz the new mandatory accounting dimension bank is not set in POS Profile
+		pcv_doc.flags.in_test = True
 		self.assertRaises(frappe.ValidationError, pcv_doc.submit)
 
 		accounting_dimension_department = frappe.get_doc(
@@ -205,7 +193,6 @@ class TestPOSClosingEntry(IntegrationTestCase):
 		)
 		accounting_dimension_department.mandatory_for_bs = 0
 		accounting_dimension_department.save()
-		disable_dimension()
 
 	def test_merging_into_sales_invoice_for_batched_item(self):
 		frappe.flags.print_message = False
@@ -214,7 +201,6 @@ class TestPOSClosingEntry(IntegrationTestCase):
 		)
 		from erpnext.stock.doctype.batch.batch import get_batch_qty
 
-		frappe.db.sql("delete from `tabPOS Invoice`")
 		item_doc = make_item(
 			"_Test Item With Batch FOR POS Merge Test",
 			properties={
@@ -265,6 +251,7 @@ class TestPOSClosingEntry(IntegrationTestCase):
 		self.assertEqual(batch_qty_with_pos, 0.0)
 
 		pcv_doc = make_closing_entry_from_opening(opening_entry)
+		pcv_doc.flags.in_test = True
 		pcv_doc.submit()
 
 		piv_merge = frappe.db.get_value("POS Invoice Merge Log", {"pos_closing_entry": pcv_doc.name}, "name")
@@ -288,6 +275,7 @@ class TestPOSClosingEntry(IntegrationTestCase):
 		frappe.flags.print_message = True
 
 		pcv_doc.reload()
+		pcv_doc.flags.in_test = True
 		pcv_doc.cancel()
 
 		batch_qty_with_pos = get_batch_qty(batch_no, "_Test Warehouse - _TC", item_code)
@@ -302,7 +290,7 @@ class TestPOSClosingEntry(IntegrationTestCase):
 		batch_qty_with_pos = get_batch_qty(batch_no, "_Test Warehouse - _TC", item_code)
 		self.assertEqual(batch_qty_with_pos, 10.0)
 
-	@IntegrationTestCase.change_settings("POS Settings", {"invoice_type": "Sales Invoice"})
+	@ERPNextTestSuite.change_settings("POS Settings", {"invoice_type": "Sales Invoice"})
 	def test_closing_entries_with_sales_invoice(self):
 		test_user, pos_profile = init_user_and_profile()
 		opening_entry = create_opening_entry(pos_profile, test_user.name)
@@ -330,6 +318,7 @@ class TestPOSClosingEntry(IntegrationTestCase):
 			if d.mode_of_payment == "Cash":
 				d.closing_amount = 1500
 
+		pcv_doc.flags.in_test = True
 		pcv_doc.submit()
 
 		self.assertEqual(pcv_doc.total_quantity, 15)
@@ -468,12 +457,56 @@ class TestPOSClosingEntry(IntegrationTestCase):
 			self.assertEqual(pos_si2.pos_closing_entry, pcv_doc2.name)
 			self.assertEqual(pos_rinv2_si.pos_closing_entry, pcv_doc2.name)
 
+	def test_change_is_taken_once_from_modes_sharing_an_account(self):
+		with self.set_user("Administrator"):
+			add_wallet_mode_of_payment(self.pos_profile, "Cash - _TC")
+
+		opening_entry = create_opening_entry(self.pos_profile, self.test_user.name)
+		make_paid_pos_invoice([("Cash", 50), ("_Test Wallet", 50)])
+
+		self.assertEqual(get_expected_amounts(opening_entry), {"Cash": 40, "_Test Wallet": 50})
+
+	def test_change_is_taken_from_the_mode_on_the_change_account(self):
+		with self.set_user("Administrator"):
+			wallet_account = make_cash_account("_Test Wallet Cash")
+			add_wallet_mode_of_payment(self.pos_profile, wallet_account)
+
+		opening_entry = create_opening_entry(self.pos_profile, self.test_user.name)
+		make_paid_pos_invoice([("Cash", 40), ("_Test Wallet", 60)], account_for_change_amount=wallet_account)
+
+		self.assertEqual(get_expected_amounts(opening_entry), {"Cash": 40, "_Test Wallet": 50})
+
+	def test_change_is_taken_after_the_cash_account_changes(self):
+		with self.set_user("Administrator"):
+			new_cash_account = make_cash_account("Zz Test Cash")
+
+		opening_entry = create_opening_entry(self.pos_profile, self.test_user.name)
+		make_paid_pos_invoice([("Cash", 100)])
+		frappe.db.set_value(
+			"Mode of Payment Account",
+			{"parent": "Cash", "company": "_Test Company"},
+			"default_account",
+			new_cash_account,
+		)
+		make_paid_pos_invoice([("Cash", 90)])
+
+		self.assertEqual(get_expected_amounts(opening_entry), {"Cash": 180})
+
+	def test_change_is_taken_when_the_change_account_differs(self):
+		with self.set_user("Administrator"):
+			change_account = make_cash_account("_Test Change Cash")
+
+		opening_entry = create_opening_entry(self.pos_profile, self.test_user.name)
+		make_paid_pos_invoice([("Cash", 100)], account_for_change_amount=change_account)
+
+		self.assertEqual(get_expected_amounts(opening_entry), {"Cash": 90})
+
 
 def init_user_and_profile(**args):
 	user = "test@example.com"
 	test_user = frappe.get_doc("User", user)
 
-	roles = ("Accounts Manager", "Accounts User", "Sales Manager")
+	roles = ("Accounts Manager", "Accounts User", "Sales Manager", "Stock User", "Item Manager")
 	test_user.add_roles(*roles)
 	frappe.set_user(user)
 
@@ -530,3 +563,46 @@ def create_multiple_pos_invoices(pos_profile):
 	pos_inv2.submit()
 
 	return pos_inv1, pos_inv2
+
+
+def make_paid_pos_invoice(payments, **args):
+	pos_invoice = create_pos_invoice(rate=90, do_not_submit=1, **args)
+	for mode_of_payment, amount in payments:
+		pos_invoice.append("payments", {"mode_of_payment": mode_of_payment, "amount": amount})
+	pos_invoice.save()
+	pos_invoice.submit()
+	return pos_invoice
+
+
+def get_expected_amounts(opening_entry):
+	closing_entry = make_closing_entry_from_opening(opening_entry)
+	return {row.mode_of_payment: row.expected_amount for row in closing_entry.payment_reconciliation}
+
+
+def make_cash_account(account_name):
+	return (
+		frappe.get_doc(
+			{
+				"doctype": "Account",
+				"account_name": account_name,
+				"parent_account": frappe.db.get_value("Account", "Cash - _TC", "parent_account"),
+				"company": "_Test Company",
+				"account_type": "Cash",
+			}
+		)
+		.insert()
+		.name
+	)
+
+
+def add_wallet_mode_of_payment(pos_profile, account):
+	frappe.get_doc(
+		{
+			"doctype": "Mode of Payment",
+			"mode_of_payment": "_Test Wallet",
+			"type": "General",
+			"accounts": [{"company": "_Test Company", "default_account": account}],
+		}
+	).insert()
+	pos_profile.append("payments", {"mode_of_payment": "_Test Wallet"})
+	pos_profile.save()

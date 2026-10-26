@@ -9,6 +9,7 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import map_child_doc, map_doc
+from frappe.query_builder import DocType
 from frappe.utils import cint, flt, get_time, getdate, nowdate, nowtime
 from frappe.utils.background_jobs import enqueue, is_job_enqueued
 from frappe.utils.scheduler import is_scheduler_inactive
@@ -16,7 +17,6 @@ from frappe.utils.scheduler import is_scheduler_inactive
 from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
 	get_checks_for_pl_and_bs_accounts,
 )
-from erpnext.controllers.sales_and_purchase_return import get_sales_invoice_item_from_consolidated_invoice
 
 
 class POSInvoiceMergeLog(Document):
@@ -214,6 +214,8 @@ class POSInvoiceMergeLog(Document):
 
 		loyalty_amount_sum, loyalty_points_sum, idx = 0, 0, 1
 
+		reversed_rows = get_reversed_rows([doc.return_against for doc in data if doc.is_return])
+
 		for doc in data:
 			old_new_item_map = frappe._dict()
 			old_new_tax_map = frappe._dict()
@@ -238,9 +240,13 @@ class POSInvoiceMergeLog(Document):
 				si_item.pos_invoice = doc.name
 				si_item.pos_invoice_item = item.name
 				if doc.is_return:
-					si_item.sales_invoice_item = get_sales_invoice_item_from_consolidated_invoice(
-						doc.return_against, item.pos_invoice_item
-					)
+					reversed_row = reversed_rows.get(item.pos_invoice_item) or frappe._dict()
+					si_item.sales_invoice_item = reversed_row.get("name")
+					# quote the rate of the row being reversed: rounding an invoice-level discount
+					# can leave a return's net rate a minor unit above the sale's, and
+					# validate_returned_items refuses a return priced above its original
+					if si_item.sales_invoice_item:
+						si_item.rate = reversed_row.rate
 				if item.serial_and_batch_bundle:
 					si_item.serial_and_batch_bundle = item.serial_and_batch_bundle
 				items.append(si_item)
@@ -283,7 +289,7 @@ class POSInvoiceMergeLog(Document):
 			base_rounding_adjustment += doc.base_rounding_adjustment
 			base_rounded_total += doc.base_rounded_total
 
-			for d in doc.get("item_wise_tax_details"):
+			for d in doc.get("item_wise_tax_details") or []:
 				row = frappe._dict(
 					item=old_new_item_map[d.item_row],
 					tax=old_new_tax_map[d.tax_row],
@@ -432,6 +438,28 @@ class POSInvoiceMergeLog(Document):
 			si.cancel()
 
 
+def get_reversed_rows(return_against):
+	"""Rows of the consolidated sales these returns reverse, keyed by the POS invoice row."""
+	if not return_against:
+		return {}
+
+	sales_invoice = DocType("Sales Invoice")
+	sales_invoice_item = DocType("Sales Invoice Item")
+
+	rows = (
+		frappe.qb.from_(sales_invoice)
+		.from_(sales_invoice_item)
+		.select(sales_invoice_item.name, sales_invoice_item.rate, sales_invoice_item.pos_invoice_item)
+		.where(
+			(sales_invoice.name == sales_invoice_item.parent)
+			& (sales_invoice.is_return == 0)
+			& (sales_invoice_item.pos_invoice.isin(return_against))
+		)
+	).run(as_dict=True)
+
+	return {row.pos_invoice_item: row for row in rows}
+
+
 def get_all_unconsolidated_invoices():
 	filters = {
 		"consolidated_invoice": ["in", ["", None]],
@@ -572,7 +600,7 @@ def split_invoices(invoices):
 
 
 def create_merge_logs(invoice_by_customer, closing_entry=None):
-	try:
+	def merge_and_close():
 		for customer, invoices_acc_dim in invoice_by_customer.items():
 			for invoices in invoices_acc_dim.values():
 				for _invoices in split_invoices(invoices):
@@ -594,25 +622,30 @@ def create_merge_logs(invoice_by_customer, closing_entry=None):
 			closing_entry.db_set("error_message", "")
 			closing_entry.update_opening_entry()
 
-	except Exception as e:
-		frappe.db.rollback()
-		message_log = frappe.message_log.pop() if frappe.message_log else str(e)
-		error_message = get_error_message(message_log)
+	if frappe.in_test:
+		merge_and_close()
+	else:
+		try:
+			merge_and_close()
+		except Exception as e:
+			frappe.db.rollback()
+			message_log = frappe.message_log.pop() if frappe.message_log else str(e)
+			error_message = get_error_message(message_log)
 
-		if closing_entry:
-			closing_entry.set_status(update=True, status="Failed")
-			if isinstance(error_message, list):
-				error_message = json.dumps(error_message)
-			closing_entry.db_set("error_message", error_message)
-		raise
+			if closing_entry:
+				closing_entry.set_status(update=True, status="Failed")
+				if isinstance(error_message, list):
+					error_message = json.dumps(error_message)
+				closing_entry.db_set("error_message", error_message)
+			raise
 
-	finally:
-		frappe.db.commit()
-		frappe.publish_realtime("closing_process_complete", user=frappe.session.user)
+		finally:
+			frappe.db.commit()
+			frappe.publish_realtime("closing_process_complete", user=frappe.session.user)
 
 
 def cancel_merge_logs(merge_logs, closing_entry=None):
-	try:
+	def merge_cancel_and_close():
 		for log in merge_logs:
 			merge_log = frappe.get_doc("POS Invoice Merge Log", log)
 			if merge_log.docstatus == 2:
@@ -626,19 +659,24 @@ def cancel_merge_logs(merge_logs, closing_entry=None):
 			closing_entry.db_set("error_message", "")
 			closing_entry.update_opening_entry(for_cancel=True)
 
-	except Exception as e:
-		frappe.db.rollback()
-		message_log = frappe.message_log.pop() if frappe.message_log else str(e)
-		error_message = get_error_message(message_log)
+	if frappe.flags.in_test:
+		merge_cancel_and_close()
+	else:
+		try:
+			merge_cancel_and_close()
+		except Exception as e:
+			frappe.db.rollback()
+			message_log = frappe.message_log.pop() if frappe.message_log else str(e)
+			error_message = get_error_message(message_log)
 
-		if closing_entry:
-			closing_entry.set_status(update=True, status="Submitted")
-			closing_entry.db_set("error_message", error_message)
-		raise
+			if closing_entry:
+				closing_entry.set_status(update=True, status="Submitted")
+				closing_entry.db_set("error_message", error_message)
+			raise
 
-	finally:
-		frappe.db.commit()
-		frappe.publish_realtime("closing_process_complete", user=frappe.session.user)
+		finally:
+			frappe.db.commit()
+			frappe.publish_realtime("closing_process_complete", user=frappe.session.user)
 
 
 def enqueue_job(job, **kwargs):

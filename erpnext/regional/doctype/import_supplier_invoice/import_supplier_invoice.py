@@ -107,7 +107,7 @@ class ImportSupplierInvoice(Document):
 				file_doc.attached_to_name = pi_name
 				file_doc.content = encoded_content
 				file_doc.decode = False
-				file_doc.is_private = False
+				file_doc.is_private = True
 				file_doc.insert(ignore_permissions=True)
 
 	def prepare_items_for_invoice(self, file_content, invoices_args):
@@ -157,6 +157,8 @@ class ImportSupplierInvoice(Document):
 
 	@frappe.whitelist()
 	def process_file_data(self):
+		self.check_permission("write")
+
 		self.db_set("status", "Processing File Data", notify=True, commit=True)
 		frappe.enqueue_doc(self.doctype, self.name, "import_xml_data", queue="long", timeout=3600)
 

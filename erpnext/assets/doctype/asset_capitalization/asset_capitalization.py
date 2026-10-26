@@ -10,7 +10,7 @@ from frappe import _
 from frappe.utils import cint, flt, get_link_to_form
 
 import erpnext
-from erpnext.assets.doctype.asset.asset import get_asset_value_after_depreciation
+from erpnext.assets.doctype.asset.asset import _get_asset_value_after_depreciation
 from erpnext.assets.doctype.asset.depreciation import (
 	depreciate_asset,
 	get_disposal_account_and_cost_center,
@@ -32,16 +32,13 @@ from erpnext.stock.get_item_details import (
 	get_item_warehouse_,
 )
 from erpnext.stock.stock_ledger import get_previous_sle
-from erpnext.stock.utils import get_incoming_rate
+from erpnext.stock.utils import _get_incoming_rate
 
 force_fields = [
 	"target_item_name",
 	"target_asset_name",
 	"item_name",
 	"asset_name",
-	"target_is_fixed_asset",
-	"target_has_serial_no",
-	"target_has_batch_no",
 	"stock_uom",
 	"fixed_asset_account",
 	"valuation_rate",
@@ -76,6 +73,7 @@ class AssetCapitalization(StockController):
 		naming_series: DF.Literal["ACC-ASC-.YYYY.-"]
 		posting_date: DF.Date
 		posting_time: DF.Time
+		project: DF.Link | None
 		service_items: DF.Table[AssetCapitalizationServiceItem]
 		service_items_total: DF.Currency
 		set_posting_time: DF.Check
@@ -83,15 +81,9 @@ class AssetCapitalization(StockController):
 		stock_items_total: DF.Currency
 		target_asset: DF.Link | None
 		target_asset_name: DF.Data | None
-		target_batch_no: DF.Link | None
 		target_fixed_asset_account: DF.Link | None
-		target_has_batch_no: DF.Check
-		target_has_serial_no: DF.Check
 		target_incoming_rate: DF.Currency
-		target_is_fixed_asset: DF.Check
 		target_item_code: DF.Link | None
-		target_qty: DF.Float
-		target_serial_no: DF.SmallText | None
 		title: DF.Data | None
 		total_value: DF.Currency
 	# end: auto-generated types
@@ -108,6 +100,9 @@ class AssetCapitalization(StockController):
 		self.set_asset_values()
 		self.calculate_totals()
 		self.set_title()
+		# Asset Capitalization overrides validate() without calling super(), so the shared
+		# mandatory inventory dimension check must be invoked explicitly here.
+		self.validate_inventory_dimension_mandatory()
 
 	def on_update(self):
 		if self.stock_items:
@@ -163,6 +158,8 @@ class AssetCapitalization(StockController):
 				if d.meta.has_field(k) and (not d.get(k) or k in force_fields):
 					d.set(k, v)
 
+		self.split_valuation_rate_for_grouped_stock_items()
+
 		for d in self.asset_items:
 			args = self.as_dict()
 			args.update(d.as_dict())
@@ -184,20 +181,35 @@ class AssetCapitalization(StockController):
 				if d.meta.has_field(k) and (not d.get(k) or k in force_fields):
 					d.set(k, v)
 
+	def split_valuation_rate_for_grouped_stock_items(self):
+		groups = {}
+		for d in self.stock_items:
+			if d.item_code and d.warehouse and not (d.serial_no or d.batch_no or d.serial_and_batch_bundle):
+				groups.setdefault((d.item_code, d.warehouse), []).append(d)
+
+		for rows in groups.values():
+			if len(rows) < 2:
+				continue
+
+			cumulative_qty = 0.0
+			prev_cumulative_value = 0.0
+			for d in rows:
+				cumulative_qty += flt(d.stock_qty)
+				args = self.get_args_for_incoming_rate(d)
+				args["qty"] = -1 * cumulative_qty
+				cumulative_rate = flt(_get_incoming_rate(args, raise_error_if_no_rate=False))
+				cumulative_value = cumulative_rate * cumulative_qty
+
+				row_value = cumulative_value - prev_cumulative_value
+				d.valuation_rate = flt(row_value / d.stock_qty) if flt(d.stock_qty) else 0.0
+				d.amount = flt(flt(d.stock_qty) * d.valuation_rate, d.precision("amount"))
+				prev_cumulative_value = cumulative_value
+
 	def validate_target_item(self):
 		target_item = frappe.get_cached_doc("Item", self.target_item_code)
 
 		if not target_item.is_fixed_asset:
 			frappe.throw(_("Target Item {0} must be a Fixed Asset item").format(target_item.name))
-
-		if target_item.is_fixed_asset:
-			self.target_qty = 1
-		if flt(self.target_qty) <= 0:
-			frappe.throw(_("Target Qty must be a positive number"))
-		if not target_item.has_batch_no:
-			self.target_batch_no = None
-		if not target_item.has_serial_no:
-			self.target_serial_no = ""
 
 		self.validate_item(target_item)
 
@@ -205,7 +217,7 @@ class AssetCapitalization(StockController):
 		if self.target_asset:
 			target_asset = self.get_asset_for_validation(self.target_asset)
 
-			if not target_asset.is_composite_asset:
+			if not target_asset.asset_type == "Composite Asset":
 				frappe.throw(_("Target Asset {0} needs to be composite asset").format(target_asset.name))
 
 			if target_asset.item_code != self.target_item_code:
@@ -314,25 +326,31 @@ class AssetCapitalization(StockController):
 		return frappe.db.get_value(
 			"Asset",
 			asset,
-			["name", "item_code", "company", "status", "docstatus", "is_composite_asset"],
+			["name", "item_code", "company", "status", "docstatus", "asset_type"],
 			as_dict=1,
 		)
 
 	@frappe.whitelist()
 	def set_warehouse_details(self):
+		self.check_permission("write")
+
 		for d in self.get("stock_items"):
 			if d.item_code and d.warehouse:
 				args = self.get_args_for_incoming_rate(d)
 				warehouse_details = get_warehouse_details(args)
 				d.update(warehouse_details)
 
+		self.split_valuation_rate_for_grouped_stock_items()
+
 	@frappe.whitelist()
 	def set_asset_values(self):
+		self.check_permission("write")
+
 		for d in self.get("asset_items"):
 			if d.asset:
 				finance_book = d.get("finance_book") or self.get("finance_book")
 				d.current_asset_value = flt(
-					get_asset_value_after_depreciation(d.asset, finance_book=finance_book)
+					_get_asset_value_after_depreciation(d.asset, finance_book=finance_book)
 				)
 				d.asset_value = get_value_after_depreciation_on_disposal_date(
 					d.asset, self.posting_date, finance_book=finance_book
@@ -380,8 +398,7 @@ class AssetCapitalization(StockController):
 		self.total_value = self.stock_items_total + self.asset_items_total + self.service_items_total
 		self.total_value = flt(self.total_value, self.precision("total_value"))
 
-		self.target_qty = flt(self.target_qty, self.precision("target_qty"))
-		self.target_incoming_rate = self.total_value / self.target_qty
+		self.target_incoming_rate = self.total_value
 
 	def update_stock_ledger(self):
 		sl_entries = []
@@ -489,7 +506,7 @@ class AssetCapitalization(StockController):
 		for item in self.asset_items:
 			asset = frappe.get_doc("Asset", item.asset)
 
-			if not asset.is_composite_component:
+			if asset.asset_type != "Composite Component":
 				if asset.calculate_depreciation:
 					notes = _(
 						"This schedule was created when Asset {0} was consumed through Asset Capitalization {1}."
@@ -542,30 +559,29 @@ class AssetCapitalization(StockController):
 	def get_composite_component_value(self):
 		composite_component_value = 0
 		for item in self.asset_items:
-			asset = frappe.db.get_value("Asset", item.asset, ["is_composite_component"], as_dict=True)
-			if asset and asset.is_composite_component:
+			asset = frappe.db.get_value("Asset", item.asset, ["asset_type"], as_dict=True)
+			if asset and asset.asset_type == "Composite Component":
 				composite_component_value += flt(item.asset_value, item.precision("asset_value"))
 		return composite_component_value
 
 	def get_gl_entries_for_target_item(
 		self, gl_entries, target_account, target_against, precision, composite_component_value
 	):
-		if self.target_is_fixed_asset:
-			total_value = flt(self.total_value - composite_component_value, precision)
-			if total_value:
-				# Capitalization
-				gl_entries.append(
-					self.get_gl_dict(
-						{
-							"account": target_account,
-							"against": ", ".join(target_against),
-							"remarks": self.get("remarks") or _("Accounting Entry for Asset"),
-							"debit": total_value,
-							"cost_center": self.get("cost_center"),
-						},
-						item=self,
-					)
+		total_value = flt(self.total_value - composite_component_value, precision)
+		if total_value:
+			# Capitalization
+			gl_entries.append(
+				self.get_gl_dict(
+					{
+						"account": target_account,
+						"against": ", ".join(target_against),
+						"remarks": self.get("remarks") or _("Accounting Entry for Asset"),
+						"debit": total_value,
+						"cost_center": self.get("cost_center"),
+					},
+					item=self,
 				)
+			)
 
 	def update_target_asset(self):
 		total_target_asset_value = flt(self.total_value, self.precision("total_value"))
@@ -611,14 +627,13 @@ class AssetCapitalization(StockController):
 
 	def set_consumed_asset_status(self, asset):
 		if self.docstatus == 1:
-			if self.target_is_fixed_asset:
-				asset.set_status("Capitalized")
-				add_asset_activity(
-					asset.name,
-					_("Asset capitalized after Asset Capitalization {0} was submitted").format(
-						get_link_to_form("Asset Capitalization", self.name)
-					),
-				)
+			asset.set_status("Capitalized")
+			add_asset_activity(
+				asset.name,
+				_("Asset capitalized after Asset Capitalization {0} was submitted").format(
+					get_link_to_form("Asset Capitalization", self.name)
+				),
+			)
 		else:
 			asset.set_status()
 			add_asset_activity(
@@ -629,8 +644,18 @@ class AssetCapitalization(StockController):
 			)
 
 
+def check_capitalization_access(company=None):
+	"""Every lookup in this file feeds the Asset Capitalization form, so that form is the boundary.
+
+	`company` is accepted so the call sites read the same as on develop, where it also narrows the
+	caller to their permitted companies. There is no Company Restriction on this branch.
+	"""
+	frappe.has_permission("Asset Capitalization", throw=True)
+
+
 @frappe.whitelist()
-def get_target_item_details(item_code=None, company=None):
+def get_target_item_details(item_code: str | None = None, company: str | None = None) -> frappe._dict:
+	check_capitalization_access(company)
 	out = frappe._dict()
 
 	# Get Item Details
@@ -640,17 +665,6 @@ def get_target_item_details(item_code=None, company=None):
 
 	# Set Item Details
 	out.target_item_name = item.item_name
-	out.target_is_fixed_asset = cint(item.is_fixed_asset)
-	out.target_has_batch_no = cint(item.has_batch_no)
-	out.target_has_serial_no = cint(item.has_serial_no)
-
-	if out.target_is_fixed_asset:
-		out.target_qty = 1
-
-	if not out.target_has_batch_no:
-		out.target_batch_no = None
-	if not out.target_has_serial_no:
-		out.target_serial_no = ""
 
 	# Cost Center
 	item_defaults = get_item_defaults(item.name, company)
@@ -667,7 +681,8 @@ def get_target_item_details(item_code=None, company=None):
 
 
 @frappe.whitelist()
-def get_target_asset_details(asset=None, company=None):
+def get_target_asset_details(asset: str | None = None, company: str | None = None) -> frappe._dict:
+	check_capitalization_access(company)
 	out = frappe._dict()
 
 	# Get Asset Details
@@ -696,11 +711,13 @@ def get_target_asset_details(asset=None, company=None):
 @frappe.whitelist()
 @erpnext.normalize_ctx_input(ItemDetailsCtx)
 def get_consumed_stock_item_details(ctx: ItemDetailsCtx):
+	frappe.has_permission("Stock Ledger Entry", throw=True)
 	out = frappe._dict()
 
 	item = frappe._dict()
 	if ctx.item_code:
 		item = frappe.get_cached_doc("Item", ctx.item_code)
+		item.check_permission()
 
 	out.item_name = item.item_name
 	out.batch_no = None
@@ -710,6 +727,8 @@ def get_consumed_stock_item_details(ctx: ItemDetailsCtx):
 	out.stock_uom = item.stock_uom
 
 	out.warehouse = get_item_warehouse_(ctx, item, overwrite_warehouse=True) if item else None
+	if out.warehouse:
+		frappe.has_permission("Warehouse", doc=out.warehouse, throw=True)
 
 	# Cost Center
 	item_defaults = get_item_defaults(item.name, ctx.company)
@@ -750,9 +769,12 @@ def get_warehouse_details(args):
 
 	out = {}
 	if args.warehouse and args.item_code:
+		frappe.has_permission("Item", doc=args.item_code, throw=True)
+		frappe.has_permission("Warehouse", doc=args.warehouse, throw=True)
+		frappe.has_permission("Stock Ledger Entry", throw=True)
 		out = {
 			"actual_qty": get_previous_sle(args).get("qty_after_transaction") or 0,
-			"valuation_rate": get_incoming_rate(args, raise_error_if_no_rate=False),
+			"valuation_rate": _get_incoming_rate(args, raise_error_if_no_rate=False),
 		}
 	return out
 
@@ -760,6 +782,14 @@ def get_warehouse_details(args):
 @frappe.whitelist()
 @erpnext.normalize_ctx_input(ItemDetailsCtx)
 def get_consumed_asset_details(ctx):
+	check_capitalization_access(ctx.get("company"))
+
+	# and the Asset the caller named: its depreciation values are returned through the unguarded
+	# _get_asset_value_after_depreciation. select-or-read, as in the asset.py wrapper.
+	if ctx.get("asset"):
+		ptype = "select" if frappe.only_has_select_perm("Asset") else "read"
+		frappe.has_permission("Asset", ptype, doc=ctx.get("asset"), throw=True)
+
 	out = frappe._dict()
 
 	asset_details = frappe._dict()
@@ -776,7 +806,7 @@ def get_consumed_asset_details(ctx):
 
 	if ctx.asset:
 		out.current_asset_value = flt(
-			get_asset_value_after_depreciation(ctx.asset, finance_book=ctx.finance_book)
+			_get_asset_value_after_depreciation(ctx.asset, finance_book=ctx.finance_book)
 		)
 		out.asset_value = get_value_after_depreciation_on_disposal_date(
 			ctx.asset, ctx.posting_date, finance_book=ctx.finance_book
@@ -806,6 +836,8 @@ def get_consumed_asset_details(ctx):
 @frappe.whitelist()
 @erpnext.normalize_ctx_input(ItemDetailsCtx)
 def get_service_item_details(ctx):
+	check_capitalization_access(ctx.get("company"))
+
 	out = frappe._dict()
 
 	item = frappe._dict()
@@ -830,6 +862,8 @@ def get_service_item_details(ctx):
 def get_items_tagged_to_wip_composite_asset(params):
 	if isinstance(params, str):
 		params = json.loads(params)
+
+	check_capitalization_access(params.get("company") if isinstance(params, dict | frappe._dict) else None)
 
 	fields = [
 		"item_code",

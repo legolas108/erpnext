@@ -14,19 +14,7 @@ def add_default_params(func, doctype):
 	return partial(func, doctype=doctype, txt="", searchfield="name", start=0, page_len=20, filters=None)
 
 
-EXTRA_TEST_RECORD_DEPENDENCIES = ["Item", "BOM", "Account"]
-
-
 class TestQueries(ERPNextTestSuite):
-	# All tests are based on self.globalTestRecords[doctype]
-
-	@classmethod
-	def setUpClass(cls):
-		super().setUpClass()
-		cls.make_employees()
-		cls.make_leads()
-		cls.make_projects()
-
 	def assert_nested_in(self, item, container):
 		self.assertIn(item, [vals for tuples in container for vals in tuples])
 
@@ -93,10 +81,32 @@ class TestQueries(ERPNextTestSuite):
 		wh = query(filters=[["Bin", "item_code", "=", "_Test Item"]])
 		self.assertGreaterEqual(len(wh), 1)
 
+	def test_get_delivery_notes_to_be_billed_skips_fully_returned(self):
+		from erpnext.stock.doctype.delivery_note.delivery_note import make_sales_return
+		from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
+
+		returned_dn = create_delivery_note(qty=2)
+		dn_return = make_sales_return(returned_dn.name)
+		dn_return.submit()
+		# a new doc misses the is_return part of status_updater, so update the original DN explicitly
+		frappe.get_doc("Delivery Note", dn_return.name).update_prevdoc_status()
+		returned_dn.reload()
+		self.assertEqual(returned_dn.status, "Return Issued")
+
+		open_dn = create_delivery_note(qty=2)
+
+		query = add_default_params(queries.get_delivery_notes_to_be_billed, "Delivery Note")
+		result = query(filters={"name": ["in", [returned_dn.name, open_dn.name]]})
+
+		self.assert_nested_in(open_dn.name, result)
+		self.assertNotIn(returned_dn.name, [row[0] for row in result])
+
 	def test_default_uoms(self):
 		self.assertGreaterEqual(frappe.db.count("UOM", {"enabled": 1}), 10)
 
 	def test_employee_query_with_user_permissions(self):
+		employee = frappe.db.get_all("Employee", {"first_name": "_Test Employee"})[0].name
+
 		# party field is a dynamic link field in Payment Entry doctype with ignore_user_permissions=0
 		ps = make_property_setter(
 			doctype="Payment Entry",
@@ -111,7 +121,7 @@ class TestQueries(ERPNextTestSuite):
 			{
 				"user": user.name,
 				"doctype": "Employee",
-				"docname": self.employees[0].name,
+				"docname": employee,
 				"is_default": 1,
 				"apply_to_all_doctypes": 1,
 				"applicable_doctypes": [],
@@ -119,7 +129,7 @@ class TestQueries(ERPNextTestSuite):
 			}
 		)
 
-		with self.set_user(user.name):
+		with ERPNextTestSuite.set_user(self, user.name):
 			params = {
 				"doctype": "Employee",
 				"txt": "",

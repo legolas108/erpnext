@@ -3,13 +3,13 @@
 import unittest
 
 import frappe
-from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, nowdate
 
+from erpnext.tests.utils import ERPNextTestSuite
 
-class TestContract(IntegrationTestCase):
+
+class TestContract(ERPNextTestSuite):
 	def setUp(self):
-		frappe.db.sql("delete from `tabContract`")
 		self.contract_doc = get_contract()
 
 	def test_validate_start_date_before_end_date(self):

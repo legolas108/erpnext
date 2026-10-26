@@ -3,7 +3,6 @@
 
 
 import frappe
-from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, getdate, today
 
 from erpnext.accounts.doctype.process_statement_of_accounts.process_statement_of_accounts import (
@@ -12,19 +11,18 @@ from erpnext.accounts.doctype.process_statement_of_accounts.process_statement_of
 )
 from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 from erpnext.accounts.test.accounts_mixin import AccountsTestMixin
+from erpnext.tests.utils import ERPNextTestSuite
 
 
-class TestProcessStatementOfAccounts(AccountsTestMixin, IntegrationTestCase):
-	@classmethod
-	def setUpClass(cls):
-		super().setUpClass()
-		cls.enterClassContext(cls.change_settings("Selling Settings", validate_selling_price=0))
-
+class TestProcessStatementOfAccounts(ERPNextTestSuite, AccountsTestMixin):
 	def setUp(self):
-		self.create_company()
-		self.create_customer()
+		frappe.db.set_single_value("Selling Settings", "validate_selling_price", 0)
+		letterhead = frappe.get_doc("Letter Head", "Company Letterhead - Grey")
+		letterhead.is_default = 0
+		letterhead.save()
+
+		self.company = "_Test Company"
 		self.create_customer(customer_name="Other Customer")
-		self.clear_old_entries()
 		self.si = create_sales_invoice()
 		create_sales_invoice(customer="Other Customer")
 
@@ -48,6 +46,27 @@ class TestProcessStatementOfAccounts(AccountsTestMixin, IntegrationTestCase):
 		# Checks the amount for the receivable entry
 		self.assertEqual(receivable_entries[1].voucher_no, self.si.name)
 		self.assertEqual(receivable_entries[1].balance, 100)
+
+	def test_process_soa_for_gl_normalizes_account_labels(self):
+		"""GL opening/total/closing rows keep valid string account labels after normalization"""
+		process_soa = create_process_soa(name="_Test Process SOA for GL Labels")
+		statement_dict = get_statement_dict(process_soa, get_statement_dict=True)
+
+		# normalization runs on the opening, total and closing rows of a customer with entries
+		rows = statement_dict["_Test Customer"][0]
+		for idx in (0, -2, -1):
+			self.assertIsInstance(rows[idx]["account"], str)
+
+	def test_process_soa_for_gl_with_no_transactions(self):
+		"""GL statement for a period with no entries is skipped without error"""
+		process_soa = create_process_soa(
+			name="_Test Process SOA for GL No Data",
+			from_date=add_days(today(), 365),
+			to_date=add_days(today(), 395),
+			posting_date=add_days(today(), 395),
+		)
+		statement_dict = get_statement_dict(process_soa, get_statement_dict=True)
+		self.assertEqual(statement_dict, {})
 
 	def test_process_soa_for_ar(self):
 		"""Tests the utils for Statement of Accounts(Accounts Receivable)"""
@@ -89,9 +108,6 @@ class TestProcessStatementOfAccounts(AccountsTestMixin, IntegrationTestCase):
 	def check_ageing_summary(self, ageing, expected_ageing):
 		for age_range in expected_ageing:
 			self.assertEqual(expected_ageing[age_range], ageing.get(age_range))
-
-	def tearDown(self):
-		frappe.db.rollback()
 
 
 def create_process_soa(**args):

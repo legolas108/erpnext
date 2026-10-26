@@ -1,14 +1,17 @@
-const doctype_list = ["Sales Invoice", "Delivery Note", "Purchase Order", "POS Invoice"];
-const allowed_print_formats = [
-	"Sales Invoice Standard",
-	"Sales Invoice with Item Image",
-	"Delivery Note Standard",
-	"Delivery Note with Item Image",
-	"Purchase Order Standard",
-	"Purchase Order with Item Image",
-	"POS Invoice Standard",
-	"POS Invoice with Item Image",
+const doctype_list = [
+	"Sales Order",
+	"Sales Invoice",
+	"Delivery Note",
+	"Purchase Order",
+	"Purchase Invoice",
+	"POS Invoice",
+	"Quotation",
+	"Request for Quotation",
 ];
+const print_format_styles = ["Bordered", "Classic", "Modern", "Modern with Images"];
+const allowed_print_formats = doctype_list.flatMap((doctype) =>
+	print_format_styles.map((style) => `${doctype} ${style}`)
+);
 const allowed_letterheads = ["Company Letterhead", "Company Letterhead - Grey"];
 
 handle_route_event();

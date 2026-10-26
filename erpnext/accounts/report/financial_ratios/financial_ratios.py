@@ -76,6 +76,7 @@ def get_ratios_data(filters, period_list, years):
 	cogs, total_expense = {}, {}
 	quick_asset = {}
 	direct_expense = {}
+	fixed_asset = {}
 
 	for year in years:
 		total_quick_asset = 0
@@ -93,6 +94,7 @@ def get_ratios_data(filters, period_list, years):
 				quick_asset,
 				total_quick_asset,
 			],
+			[fixed_asset, total_asset, "Fixed Asset", year, assets, "Asset", {}, 0],
 			[
 				current_liability,
 				total_liability,
@@ -112,7 +114,7 @@ def get_ratios_data(filters, period_list, years):
 	add_solvency_ratios(
 		data, years, total_asset, total_liability, net_sales, cogs, total_income, total_expense
 	)
-	add_turnover_ratios(data, years, period_list, filters, total_asset, net_sales, cogs, direct_expense)
+	add_turnover_ratios(data, years, period_list, filters, fixed_asset, net_sales, cogs, direct_expense)
 
 	return data
 
@@ -193,7 +195,7 @@ def add_solvency_ratios(
 	data.append(return_on_equity_ratio)
 
 
-def add_turnover_ratios(data, years, period_list, filters, total_asset, net_sales, cogs, direct_expense):
+def add_turnover_ratios(data, years, period_list, filters, fixed_asset, net_sales, cogs, direct_expense):
 	precision = frappe.db.get_single_value("System Settings", "float_precision")
 	data.append({"ratio": _("Turnover Ratios")})
 
@@ -208,7 +210,7 @@ def add_turnover_ratios(data, years, period_list, filters, total_asset, net_sale
 	)
 
 	ratio_data = [
-		[_("Fixed Asset Turnover Ratio"), net_sales, total_asset],
+		[_("Fixed Asset Turnover Ratio"), net_sales, fixed_asset],
 		[_("Debtor Turnover Ratio"), net_sales, avg_debtors],
 		[_("Creditor Turnover Ratio"), direct_expense, avg_creditors],
 		[_("Inventory Turnover Ratio"), cogs, avg_stock],
@@ -233,30 +235,38 @@ def update_balances(
 	net_dict=None,
 	total_net=0,
 ):
+	accounts = {entry.get("account"): entry for entry in root_type_data if entry.get("account")}
+
 	for entry in root_type_data:
 		if not entry.get("parent_account") and entry.get("is_group"):
 			total_dict[year] = entry[year]
 			if account_type == "Direct Expense":
 				total_dict[year] = entry[year] * -1
 
+		if root_type == "Expense" and account_type == "Cost of Goods Sold":
+			if entry.get("account_type") == account_type:
+				total_net += entry.get(year)
+				ratio_dict[year] = total_net
+		elif is_outermost_group_of_type(entry, account_type, accounts):
+			ratio_dict[year] = flt(ratio_dict.get(year)) + flt(entry.get(year))
+
 		if root_type in ("Asset", "Liability"):
-			if entry.get("account_type") == account_type and entry.get("is_group"):
-				ratio_dict[year] = entry.get(year)
 			if entry.get("account_type") in ["Bank", "Cash", "Receivable"] and not entry.get("is_group"):
 				total_net += entry.get(year)
 				net_dict[year] = total_net
 
-		elif root_type == "Income":
-			if entry.get("account_type") == account_type and entry.get("is_group"):
-				total_net += entry.get(year)
-				ratio_dict[year] = total_net
-		elif root_type == "Expense" and account_type == "Cost of Goods Sold":
-			if entry.get("account_type") == account_type:
-				total_net += entry.get(year)
-				ratio_dict[year] = total_net
-		else:
-			if entry.get("account_type") == account_type and entry.get("is_group"):
-				ratio_dict[year] = entry.get(year)
+
+def is_outermost_group_of_type(entry, account_type, accounts):
+	if not (entry.get("is_group") and entry.get("account_type") == account_type):
+		return False
+
+	parent = accounts.get(entry.get("parent_account"))
+	while parent:
+		if parent.get("is_group") and parent.get("account_type") == account_type:
+			return False
+		parent = accounts.get(parent.get("parent_account"))
+
+	return True
 
 
 def avg_ratio_balance(account_type, period_list, precision, filters):

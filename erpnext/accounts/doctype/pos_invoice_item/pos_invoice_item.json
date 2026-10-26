@@ -38,6 +38,7 @@
   "discount_percentage",
   "discount_amount",
   "distributed_discount_amount",
+  "mapped_additional_discount_amount",
   "base_rate_with_margin",
   "section_break1",
   "rate",
@@ -238,6 +239,7 @@
    "fieldname": "conversion_factor",
    "fieldtype": "Float",
    "label": "UOM Conversion Factor",
+   "precision": "9",
    "print_hide": 1,
    "reqd": 1
   },
@@ -811,6 +813,7 @@
   },
   {
    "default": "0",
+   "fetch_from": "item_code.grant_commission",
    "fieldname": "grant_commission",
    "fieldtype": "Check",
    "label": "Grant Commission",
@@ -853,11 +856,22 @@
    "fieldtype": "Currency",
    "label": "Distributed Discount Amount",
    "options": "currency"
+  },
+  {
+   "default": "0",
+   "description": "Tax-exclusive additional discount carried from a source document, per stock unit.",
+   "fieldname": "mapped_additional_discount_amount",
+   "fieldtype": "Currency",
+   "label": "Additional Discount per Stock Unit",
+   "options": "currency",
+   "precision": "9",
+   "print_hide": 1,
+   "read_only": 1
   }
  ],
  "istable": 1,
  "links": [],
- "modified": "2025-11-12 18:11:11.818015",
+ "modified": "2026-08-07 17:31:31.732720",
  "modified_by": "Administrator",
  "module": "Accounts",
  "name": "POS Invoice Item",

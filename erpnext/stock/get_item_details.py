@@ -13,13 +13,16 @@ from frappe.model.document import Document
 from frappe.model.meta import get_field_precision
 from frappe.model.utils import get_fetch_values
 from frappe.query_builder.functions import IfNull, Sum
-from frappe.utils import add_days, add_months, cint, cstr, flt, getdate, parse_json
+from frappe.utils import add_days, add_months, cint, cstr, flt, get_link_to_form, getdate, parse_json
+from pypika import Order
+from pypika.analytics import RowNumber
 
 import erpnext
 from erpnext import get_company_currency
 from erpnext.accounts.doctype.pricing_rule.pricing_rule import (
 	get_pricing_rule_for_item,
 	set_transaction_type,
+	validate_pricing_context,
 )
 from erpnext.setup.doctype.brand.brand import get_brand_defaults
 from erpnext.setup.doctype.item_group.item_group import get_item_group_defaults
@@ -41,6 +44,30 @@ purchase_doctypes = [
 	"Purchase Invoice",
 ]
 
+NOT_APPLICABLE_TAX = "N/A"
+
+# For each transaction, the child-row link field(s) that point to the source
+# document item, mapped to that source item doctype. When "maintain same rate" is
+# on, a mapped row keeps the persisted source pricing (read straight from that row),
+# so an unsaved edit on the target row can never lock in a non-source rate.
+maintain_same_rate_source_fields = {
+	"Purchase Order": {"supplier_quotation_item": "Supplier Quotation Item"},
+	"Purchase Receipt": {"purchase_order_item": "Purchase Order Item"},
+	"Purchase Invoice": {"po_detail": "Purchase Order Item", "pr_detail": "Purchase Receipt Item"},
+	"Sales Order": {"quotation_item": "Quotation Item"},
+	"Delivery Note": {"so_detail": "Sales Order Item", "si_detail": "Sales Invoice Item"},
+	"Sales Invoice": {"so_detail": "Sales Order Item", "dn_detail": "Delivery Note Item"},
+}
+
+LOCKED_RATE_FIELDS = [
+	"price_list_rate",
+	"rate",
+	"discount_percentage",
+	"discount_amount",
+	"margin_type",
+	"margin_rate_or_amount",
+]
+
 
 def _preprocess_ctx(ctx):
 	if not ctx.price_list:
@@ -56,7 +83,23 @@ def _preprocess_ctx(ctx):
 
 @frappe.whitelist()
 @erpnext.normalize_ctx_input(ItemDetailsCtx)
-def get_item_details(ctx, doc=None, for_validate=False, overwrite_warehouse=True) -> ItemDetails:
+def get_item_details(
+	ctx: ItemDetailsCtx,
+	doc: Document | str | dict | None = None,
+	for_validate: bool | None = False,
+	overwrite_warehouse: bool = True,
+) -> ItemDetails:
+	validate_pricing_context(ctx)
+	return _get_item_details(ctx, doc, for_validate, overwrite_warehouse)
+
+
+@erpnext.normalize_ctx_input(ItemDetailsCtx)
+def _get_item_details(
+	ctx: ItemDetailsCtx,
+	doc: Document | str | None = None,
+	for_validate: bool | None = False,
+	overwrite_warehouse: bool = True,
+) -> ItemDetails:
 	"""
 	ctx = {
 	        "item_code": "",
@@ -82,6 +125,7 @@ def get_item_details(ctx, doc=None, for_validate=False, overwrite_warehouse=True
 	for_validate = parse_json(for_validate)
 	overwrite_warehouse = parse_json(overwrite_warehouse)
 	item = frappe.get_cached_doc("Item", ctx.item_code)
+	item.check_permission()
 	validate_item_details(ctx, item)
 
 	if isinstance(doc, str):
@@ -117,16 +161,20 @@ def get_item_details(ctx, doc=None, for_validate=False, overwrite_warehouse=True
 	if ctx.doctype in ["Purchase Order", "Purchase Receipt", "Purchase Invoice"]:
 		ctx.customer = None
 
-	out.update(get_price_list_rate(ctx, item))
+	source_row = get_rate_locked_source_row(ctx, doc)
+	if source_row:
+		lock_source_rate(out, source_row)
+	else:
+		out.update(get_price_list_rate(ctx, item))
 
-	if (
-		not out.price_list_rate
-		and ctx.transaction_type == "selling"
-		and frappe.get_single_value("Selling Settings", "fallback_to_default_price_list")
-	):
-		fallback_args = ctx.copy()
-		fallback_args.price_list = frappe.get_single_value("Selling Settings", "selling_price_list")
-		out.update(get_price_list_rate(fallback_args, item))
+		if (
+			not out.price_list_rate
+			and ctx.transaction_type == "selling"
+			and frappe.get_single_value("Selling Settings", "fallback_to_default_price_list")
+		):
+			fallback_args = ctx.copy()
+			fallback_args.price_list = frappe.get_single_value("Selling Settings", "selling_price_list")
+			out.update(get_price_list_rate(fallback_args, item))
 
 	ctx.customer = current_customer
 
@@ -141,9 +189,8 @@ def get_item_details(ctx, doc=None, for_validate=False, overwrite_warehouse=True
 		if ctx.get(key) is None:
 			ctx[key] = value
 
-	data = get_pricing_rule_for_item(ctx, doc=doc, for_validate=for_validate)
-
-	out.update(data)
+	if not source_row:
+		out.update(get_pricing_rule_for_item(ctx, doc=doc, for_validate=for_validate))
 
 	if (
 		frappe.get_single_value("Stock Settings", "auto_create_serial_and_batch_bundle_for_outward")
@@ -173,6 +220,70 @@ def remove_standard_fields(out: ItemDetails):
 	return out
 
 
+@frappe.request_cache
+def has_source_doc_permission(doctype: str, docname: str, user: str) -> bool:
+	return frappe.has_permission(doctype, doc=docname, user=user)
+
+
+def get_rate_locked_source_row(ctx: ItemDetailsCtx, doc) -> frappe._dict | None:
+	"""Return the persisted source-document row a mapped target row is locked to.
+
+	The rate is read from the linked source row in the database (not the mutable
+	target row), so a re-fetch always restores the source pricing the maintain-same-
+	rate validator checks against, even after an unsaved edit on the target row.
+	"""
+	if isinstance(doc, str):
+		doc = json.loads(doc)
+
+	source_fields = maintain_same_rate_source_fields.get(ctx.parenttype or ctx.doctype)
+	if not source_fields or not doc or ctx.get("is_return") or not maintain_same_rate_enabled(ctx):
+		return None
+
+	row = (
+		next((d for d in doc.get("items") or [] if d.get("name") == ctx.child_docname), None)
+		if ctx.child_docname
+		else ctx
+	)
+	if not row:
+		return None
+
+	for link_field, source_doctype in source_fields.items():
+		if source_name := row.get(link_field):
+			# a direct read would bypass permissions; only return source pricing to a
+			# caller allowed to read the source document
+			source = frappe.db.get_value(
+				source_doctype, source_name, [*LOCKED_RATE_FIELDS, "parent", "parenttype"], as_dict=True
+			)
+			if source and has_source_doc_permission(source.parenttype, source.parent, frappe.session.user):
+				return source
+			return None
+	return None
+
+
+def maintain_same_rate_enabled(ctx: ItemDetailsCtx) -> bool:
+	if (ctx.parenttype or ctx.doctype) in purchase_doctypes:
+		if ctx.get("is_internal_supplier"):
+			return False
+		return bool(cint(frappe.get_cached_value("Buying Settings", "None", "maintain_same_rate")))
+
+	if ctx.get("is_internal_customer"):
+		return False
+	return bool(cint(frappe.get_cached_value("Selling Settings", "None", "maintain_same_sales_rate")))
+
+
+def lock_source_rate(out: frappe._dict, source_row) -> None:
+	"""Copy the source row's whole pricing block onto out so a mapped row keeps its
+	exact rate. Pricing rules are skipped for these rows, so nothing re-derives it and
+	the manual discount or margin that made rate differ from price_list_rate survives.
+	"""
+	out.price_list_rate = flt(source_row.get("price_list_rate")) or flt(source_row.get("rate"))
+	out.rate = flt(source_row.get("rate"))
+	out.discount_percentage = flt(source_row.get("discount_percentage"))
+	out.discount_amount = flt(source_row.get("discount_amount"))
+	out.margin_type = source_row.get("margin_type")
+	out.margin_rate_or_amount = flt(source_row.get("margin_rate_or_amount"))
+
+
 def set_valuation_rate(out: ItemDetails | dict, ctx: ItemDetailsCtx):
 	if frappe.db.exists("Product Bundle", {"name": ctx.item_code, "disabled": 0}, cache=True):
 		valuation_rate = 0.0
@@ -180,7 +291,7 @@ def set_valuation_rate(out: ItemDetails | dict, ctx: ItemDetailsCtx):
 
 		for bundle_item in bundled_items.items:
 			valuation_rate += flt(
-				get_valuation_rate(bundle_item.item_code, ctx.company, out.get("warehouse")).get(
+				_get_valuation_rate(bundle_item.item_code, ctx.company, out.get("warehouse")).get(
 					"valuation_rate"
 				)
 				* bundle_item.qty
@@ -189,12 +300,11 @@ def set_valuation_rate(out: ItemDetails | dict, ctx: ItemDetailsCtx):
 		out.update({"valuation_rate": valuation_rate})
 
 	else:
-		out.update(get_valuation_rate(ctx.item_code, ctx.company, out.get("warehouse")))
+		out.update(_get_valuation_rate(ctx.item_code, ctx.company, out.get("warehouse")))
 
 
 def update_stock(ctx, out, doc=None):
 	from erpnext.stock.doctype.batch.batch import get_available_batches
-	from erpnext.stock.doctype.serial_no.serial_no import get_serial_nos_for_outward
 
 	if (
 		(
@@ -234,7 +344,7 @@ def update_stock(ctx, out, doc=None):
 				filter_batches(batches, doc)
 
 			for batch_no, batch_qty in batches.items():
-				rate = get_batch_based_item_price(
+				rate = _get_batch_based_item_price(
 					{"price_list": doc.get("selling_price_list"), "uom": out.uom, "batch_no": batch_no},
 					out.item_code,
 				)
@@ -250,18 +360,28 @@ def update_stock(ctx, out, doc=None):
 				if rate:
 					out.update({"rate": rate, "price_list_rate": rate})
 
-		if out.has_serial_no and out.has_batch_no and has_incorrect_serial_nos(ctx, out):
-			kwargs["batches"] = [ctx.get("batch_no")] if ctx.get("batch_no") else [out.get("batch_no")]
-			serial_nos = get_serial_nos_for_outward(kwargs)
-			serial_nos = get_filtered_serial_nos(serial_nos, doc)
+		if out.has_serial_no and needs_serial_nos(ctx, out):
+			set_serial_nos_for_outward(ctx, out, kwargs, doc)
 
-			out["serial_no"] = "\n".join(serial_nos[: cint(out.stock_qty)])
 
-		elif out.has_serial_no and not ctx.get("serial_no"):
-			serial_nos = get_serial_nos_for_outward(kwargs)
-			serial_nos = get_filtered_serial_nos(serial_nos, doc)
+def needs_serial_nos(ctx, out):
+	if not out.has_batch_no:
+		return not ctx.get("serial_no")
 
-			out["serial_no"] = "\n".join(serial_nos[: cint(out.stock_qty)])
+	if ctx.get("use_serial_batch_fields"):
+		return False
+
+	return has_incorrect_serial_nos(ctx, out)
+
+
+def set_serial_nos_for_outward(ctx, out, kwargs, doc):
+	from erpnext.stock.doctype.serial_no.serial_no import get_serial_nos_for_outward
+
+	if out.has_batch_no:
+		kwargs["batches"] = [ctx.get("batch_no") or out.get("batch_no")]
+
+	serial_nos = get_filtered_serial_nos(get_serial_nos_for_outward(kwargs), doc)
+	out["serial_no"] = "\n".join(serial_nos[: cint(out.stock_qty)])
 
 
 def has_incorrect_serial_nos(ctx, out):
@@ -305,10 +425,9 @@ def update_bin_details(ctx: ItemDetailsCtx, out: ItemDetails, doc):
 		out.update(get_bin_details(ctx.item_code, ctx.from_warehouse))
 
 	elif out.get("warehouse"):
-		company = ctx.company if (doc and doc.get("doctype") == "Purchase Order") else None
-
-		# calculate company_total_stock only for po
-		bin_details = get_bin_details(ctx.item_code, out.warehouse, company, include_child_warehouses=True)
+		bin_details = get_bin_details(
+			ctx.item_code, out.warehouse, ctx.company, include_child_warehouses=True
+		)
 
 		out.update(bin_details)
 
@@ -538,10 +657,21 @@ def get_basic_details(ctx: ItemDetailsCtx, item, overwrite_warehouse=True) -> It
 			ctx.name, ctx.conversion_rate, item.name, out.conversion_factor
 		)
 
+	expense_account_field = "default_expense_account"
+	if (
+		item.is_stock_item
+		and erpnext.is_perpetual_inventory_enabled(ctx.company)
+		and (
+			ctx.doctype == "Purchase Receipt"
+			or (ctx.doctype == "Purchase Invoice" and ctx.get("update_stock"))
+		)
+	):
+		expense_account_field = "stock_received_but_not_billed"
+
 	# if default specified in item is for another company, fetch from company
 	for d in [
 		["Account", "income_account", "default_income_account"],
-		["Account", "expense_account", "default_expense_account"],
+		["Account", "expense_account", expense_account_field],
 		["Cost Center", "cost_center", "cost_center"],
 		["Warehouse", "warehouse", ""],
 	]:
@@ -608,13 +738,8 @@ def get_item_warehouse_(ctx: ItemDetailsCtx, item, overwrite_warehouse, defaults
 	else:
 		warehouse = ctx.warehouse
 
-	if not warehouse:
-		default_warehouse = frappe.get_single_value("Stock Settings", "default_warehouse")
-		if (
-			default_warehouse
-			and frappe.get_cached_value("Warehouse", default_warehouse, "company") == ctx.company
-		):
-			return default_warehouse
+	if not warehouse and ctx.company:
+		return frappe.get_cached_value("Company", ctx.company, "default_warehouse")
 
 	return warehouse
 
@@ -724,16 +849,24 @@ def get_item_tax_template(ctx, item=None, out: ItemDetails | None = None):
 		item_tax_template = _get_item_tax_template(ctx, item.taxes, out)
 
 	if not item_tax_template:
-		item_group = item.item_group
-		while item_group and not item_tax_template:
-			item_group_doc = frappe.get_cached_doc("Item Group", item_group)
-			item_tax_template = _get_item_tax_template(ctx, item_group_doc.taxes, out)
-			item_group = item_group_doc.parent_item_group
+		item_tax_template = _get_item_tax_template_from_item_group(ctx, item.item_group, out)
 
 	if out and ctx.get("child_doctype") and item_tax_template:
 		out.update(get_fetch_values(ctx.get("child_doctype"), "item_tax_template", item_tax_template))
 
 	return item_tax_template
+
+
+def _get_item_tax_template_from_item_group(ctx, item_group, out=None):
+	from frappe.utils.nestedset import get_ancestors_of
+
+	ancestors = get_ancestors_of("Item Group", item_group)
+	for group in [item_group, *ancestors]:
+		group_doc = frappe.get_cached_doc("Item Group", group)
+		item_tax_template = _get_item_tax_template(ctx, group_doc.taxes, out)
+		if item_tax_template:
+			return item_tax_template
+	return None
 
 
 @erpnext.normalize_ctx_input(ItemDetailsCtx)
@@ -836,7 +969,10 @@ def get_item_tax_map(*, doc: str | dict | Document, tax_template: str | None = N
 		template = frappe.get_cached_doc("Item Tax Template", tax_template)
 		for d in template.taxes:
 			if frappe.get_cached_value("Account", d.tax_type, "company") == doc.get("company"):
-				item_tax_map[d.tax_type] = d.tax_rate
+				if d.get("not_applicable"):
+					item_tax_map[d.tax_type] = NOT_APPLICABLE_TAX
+				else:
+					item_tax_map[d.tax_type] = d.tax_rate
 
 	return json.dumps(item_tax_map) if as_json else item_tax_map
 
@@ -1041,6 +1177,30 @@ def get_price_list_rate(ctx: ItemDetailsCtx, item_doc, out: ItemDetails = None):
 	return out
 
 
+def get_item_prices_to_auto_update(ctx):
+	ip = frappe.qb.DocType("Item Price")
+	query = (
+		frappe.qb.from_(ip)
+		.select(ip.name, ip.price_list_rate, ip.valid_from, ip.valid_upto)
+		.where(
+			(ip.item_code == ctx.item_code)
+			& (ip.price_list == ctx.price_list)
+			& (ip.currency == ctx.currency)
+			& (ip.uom == ctx.stock_uom)
+		)
+	)
+
+	for fieldname in ("customer", "supplier", "batch_no"):
+		query = query.where(IfNull(ip[fieldname], "").isin(["", cstr(ctx.get(fieldname))]))
+		query = query.orderby(IfNull(ip[fieldname], ""), order=frappe.qb.desc)
+
+	return (
+		query.orderby(ip.valid_from.isnull(), order=frappe.qb.asc)
+		.orderby(ip.valid_from, order=frappe.qb.desc)
+		.orderby(ip.creation, order=frappe.qb.desc)
+	).run(as_dict=True)
+
+
 def insert_item_price(ctx: ItemDetailsCtx):
 	"""Insert Item Price if Price List and Price List Rate are specified and currency is the same"""
 	if not ctx.price_list or not ctx.rate or ctx.is_internal_supplier or ctx.is_internal_customer:
@@ -1055,16 +1215,20 @@ def insert_item_price(ctx: ItemDetailsCtx):
 	):
 		return
 
-	item_price = frappe.db.get_value(
-		"Item Price",
-		{
-			"item_code": ctx.item_code,
-			"price_list": ctx.price_list,
-			"currency": ctx.currency,
-			"uom": ctx.stock_uom,
-		},
-		["name", "price_list_rate"],
-		as_dict=1,
+	transaction_date = (
+		getdate(ctx.get("posting_date") or ctx.get("transaction_date") or ctx.get("posting_datetime"))
+		or getdate()
+	)
+
+	item_prices = get_item_prices_to_auto_update(ctx)
+	item_price = next(
+		(
+			row
+			for row in item_prices
+			if (not row.valid_from or getdate(row.valid_from) <= transaction_date)
+			and (not row.valid_upto or getdate(row.valid_upto) >= transaction_date)
+		),
+		item_prices[0] if item_prices else None,
 	)
 
 	update_based_on_price_list_rate = stock_settings.update_price_list_based_on == "Price List Rate"
@@ -1079,11 +1243,34 @@ def insert_item_price(ctx: ItemDetailsCtx):
 		if not price_list_rate or item_price.price_list_rate == price_list_rate:
 			return
 
-		frappe.db.set_value("Item Price", item_price.name, "price_list_rate", price_list_rate)
-		frappe.msgprint(
-			_("Item Price updated for {0} in Price List {1}").format(ctx.item_code, ctx.price_list),
-			alert=True,
-		)
+		is_price_valid_for_transaction = (
+			not item_price.valid_from or getdate(item_price.valid_from) <= transaction_date
+		) and (not item_price.valid_upto or getdate(item_price.valid_upto) >= transaction_date)
+		if is_price_valid_for_transaction:
+			frappe.db.set_value("Item Price", item_price.name, "price_list_rate", price_list_rate)
+			frappe.msgprint(
+				_("Item Price updated for {0} in Price List {1}").format(ctx.item_code, ctx.price_list),
+				alert=True,
+			)
+		else:
+			# if price is not valid for the transaction date, insert a new price list rate with updated price and future validity
+
+			item_price = frappe.new_doc(
+				"Item Price",
+				item_code=ctx.item_code,
+				price_list_rate=price_list_rate,
+				currency=ctx.currency,
+				uom=ctx.stock_uom,
+				price_list=ctx.price_list,
+				valid_from=transaction_date,
+			)
+			item_price.insert()
+			frappe.msgprint(
+				_("Item Price added for {0} in Price List - {1}").format(
+					get_link_to_form("Item", ctx.item_code), ctx.price_list
+				),
+				alert=True,
+			)
 	else:
 		rate_to_consider = (
 			(flt(ctx.price_list_rate) or flt(ctx.rate)) if update_based_on_price_list_rate else flt(ctx.rate)
@@ -1098,11 +1285,14 @@ def insert_item_price(ctx: ItemDetailsCtx):
 				"currency": ctx.currency,
 				"price_list_rate": price_list_rate,
 				"uom": ctx.stock_uom,
+				"valid_from": transaction_date,
 			}
 		)
 		item_price.insert()
 		frappe.msgprint(
-			_("Item Price added for {0} in Price List {1}").format(ctx.item_code, ctx.price_list),
+			_("Item Price added for {0} in Price List - {1}").format(
+				get_link_to_form("Item", ctx.item_code), ctx.price_list
+			),
 			alert=True,
 		)
 
@@ -1112,7 +1302,7 @@ def _get_stock_uom_rate(rate: float, ctx: ItemDetailsCtx):
 
 
 def get_item_price(
-	pctx: ItemPriceCtx | dict, item_code, ignore_party=False, force_batch_no=False
+	pctx: ItemPriceCtx | dict, item_code, ignore_party=False, force_batch_no=False, limit=1
 ) -> list[dict]:
 	"""
 	Get name, price_list_rate from Item Price based on conditions
@@ -1122,21 +1312,62 @@ def get_item_price(
 	:param item_code: str, Item Doctype field item_code
 	"""
 	pctx: ItemPriceCtx = frappe._dict(pctx)
+	query, ip = _get_item_price_query(pctx, [item_code], ignore_party, force_batch_no)
+	query = query.select(ip.name, ip.price_list_rate, ip.uom, ip.packing_unit)
+	query = _order_item_prices(query, ip, pctx)
+	if limit:
+		query = query.limit(limit)
 
-	ip = frappe.qb.DocType("Item Price")
-	query = (
-		frappe.qb.from_(ip)
-		.select(ip.name, ip.price_list_rate, ip.uom)
-		.where(
-			(ip.item_code == item_code)
-			& (ip.price_list == pctx.price_list)
-			& (IfNull(ip.uom, "").isin(["", pctx.uom]))
+	return query.run(as_dict=True)
+
+
+def get_item_prices_for_stock_uom(pctx: ItemPriceCtx | dict, item_codes: list[str]) -> dict[str, ItemDetails]:
+	"""Return the highest-priority Item Price for each item in its stock UOM."""
+	if not item_codes:
+		return {}
+
+	pctx: ItemPriceCtx = frappe._dict(pctx)
+	query, ip = _get_item_price_query(pctx, item_codes, match_uom=False)
+	item = frappe.qb.DocType("Item")
+	priority = _order_item_prices(RowNumber().over(ip.item_code), ip, pctx)
+	ranked_prices = (
+		query.inner_join(item)
+		.on(item.name == ip.item_code)
+		.select(
+			ip.item_code,
+			ip.name,
+			ip.price_list_rate,
+			ip.packing_unit,
+			priority.as_("priority"),
 		)
-		.orderby(ip.valid_from, order=frappe.qb.desc)
-		.orderby(IfNull(ip.batch_no, ""), order=frappe.qb.desc)
-		.orderby(ip.uom, order=frappe.qb.desc)
-		.limit(1)
+		.where((IfNull(ip.uom, "") == "") | (ip.uom == item.stock_uom))
+	).as_("ranked_prices")
+
+	prices = (
+		frappe.qb.from_(ranked_prices)
+		.select(
+			ranked_prices.item_code,
+			ranked_prices.name,
+			ranked_prices.price_list_rate,
+			ranked_prices.packing_unit,
+		)
+		.where(ranked_prices.priority == 1)
+		.run(as_dict=True)
 	)
+	return {price.item_code: price for price in prices}
+
+
+def _get_item_price_query(
+	pctx: ItemPriceCtx,
+	item_codes: list[str],
+	ignore_party=False,
+	force_batch_no=False,
+	match_uom=True,
+):
+	ip = frappe.qb.DocType("Item Price")
+	query = frappe.qb.from_(ip).where((ip.item_code.isin(item_codes)) & (ip.price_list == pctx.price_list))
+	if match_uom:
+		query = query.where(IfNull(ip.uom, "").isin(["", pctx.uom]))
 
 	if force_batch_no:
 		query = query.where(ip.batch_no == pctx.batch_no)
@@ -1145,9 +1376,15 @@ def get_item_price(
 
 	if not ignore_party:
 		if pctx.customer:
-			query = query.where(ip.customer == pctx.customer)
+			query = query.where(
+				(ip.customer == pctx.customer)
+				| ((IfNull(ip.customer, "") == "") & (IfNull(ip.supplier, "") == ""))
+			)
 		elif pctx.supplier:
-			query = query.where(ip.supplier == pctx.supplier)
+			query = query.where(
+				(ip.supplier == pctx.supplier)
+				| ((IfNull(ip.customer, "") == "") & (IfNull(ip.supplier, "") == ""))
+			)
 		else:
 			query = query.where((IfNull(ip.customer, "") == "") & (IfNull(ip.supplier, "") == ""))
 
@@ -1157,11 +1394,30 @@ def get_item_price(
 			& (IfNull(ip.valid_upto, "2500-12-31") >= pctx.transaction_date)
 		)
 
-	return query.run(as_dict=True)
+	return query, ip
+
+
+def _order_item_prices(query, ip, pctx):
+	if pctx.customer:
+		query = query.orderby(IfNull(ip.customer, ""), order=Order.desc)
+	elif pctx.supplier:
+		query = query.orderby(IfNull(ip.supplier, ""), order=Order.desc)
+
+	return (
+		query.orderby(IfNull(ip.batch_no, ""), order=Order.desc)
+		.orderby(ip.valid_from, order=Order.desc)
+		.orderby(ip.uom, order=Order.desc)
+	)
 
 
 @frappe.whitelist()
 def get_batch_based_item_price(pctx: ItemPriceCtx | dict | str, item_code) -> float:
+	pctx = frappe._dict(parse_json(pctx))
+	validate_pricing_context(pctx)
+	return _get_batch_based_item_price(pctx, item_code)
+
+
+def _get_batch_based_item_price(pctx: ItemPriceCtx | dict | str, item_code) -> float:
 	pctx = parse_json(pctx)
 
 	item_price = get_item_price(pctx, item_code, force_batch_no=True)
@@ -1199,15 +1455,11 @@ def get_price_list_rate_for(ctx: ItemDetailsCtx, item_code):
 	)
 
 	item_price_data = 0
-	price_list_rate = get_item_price(pctx, item_code)
+	price_list_rate = get_item_price(pctx, item_code, limit=None)
 	if price_list_rate:
-		desired_qty = ctx.get("qty")
-		if desired_qty and check_packing_list(price_list_rate[0].name, desired_qty, item_code):
-			item_price_data = price_list_rate
+		if desired_qty := ctx.get("qty"):
+			item_price_data = get_prices_fitting_packing_unit(price_list_rate, desired_qty)
 	else:
-		for field in ["customer", "supplier"]:
-			del pctx[field]
-
 		general_price_list_rate = get_item_price(pctx, item_code, ignore_party=ctx.get("ignore_party"))
 
 		if not general_price_list_rate and ctx.get("uom") != ctx.get("stock_uom"):
@@ -1224,6 +1476,14 @@ def get_price_list_rate_for(ctx: ItemDetailsCtx, item_code):
 			return flt(item_price_data[0].price_list_rate * flt(ctx.get("conversion_factor", 1)))
 		else:
 			return item_price_data[0].price_list_rate
+
+
+def get_prices_fitting_packing_unit(item_prices, desired_qty):
+	for item_price in item_prices:
+		if not item_price.packing_unit or flt(desired_qty) % flt(item_price.packing_unit) == 0:
+			return [item_price]
+
+	return []
 
 
 def check_packing_list(price_list_rate_name, desired_qty, item_code):
@@ -1370,6 +1630,11 @@ def get_pos_profile(company, pos_profile=None, user=None):
 	if not user:
 		user = frappe.session["user"]
 
+	allowed_pos_profiles = frappe.get_list("POS Profile", pluck="name")
+
+	if not allowed_pos_profiles:
+		return None
+
 	pf = frappe.qb.DocType("POS Profile")
 	pfu = frappe.qb.DocType("POS Profile User")
 
@@ -1379,6 +1644,7 @@ def get_pos_profile(company, pos_profile=None, user=None):
 		.on(pf.name == pfu.parent)
 		.select(pf.star)
 		.where((pfu.user == user) & (pfu.default == 1))
+		.where(pf.name.isin(allowed_pos_profiles))
 	)
 
 	if company:
@@ -1393,6 +1659,7 @@ def get_pos_profile(company, pos_profile=None, user=None):
 			.on(pf.name == pfu.parent)
 			.select(pf.star)
 			.where((pf.company == company) & (pf.disabled == 0))
+			.where(pf.name.isin(allowed_pos_profiles))
 		).run(as_dict=True)
 
 	return pos_profile and pos_profile[0] or None
@@ -1431,6 +1698,10 @@ def get_conversion_factor(item_code, uom):
 
 @frappe.whitelist()
 def get_projected_qty(item_code, warehouse):
+	# record-level read on the item, as get_item_details() in this file already does. Nothing in the
+	# tree calls this, so no caller's roles constrain the choice.
+	frappe.has_permission("Item", doc=item_code, throw=True)
+
 	return {
 		"projected_qty": frappe.db.get_value(
 			"Bin", {"item_code": item_code, "warehouse": warehouse}, "projected_qty"
@@ -1440,6 +1711,9 @@ def get_projected_qty(item_code, warehouse):
 
 @frappe.whitelist()
 def get_bin_details(item_code, warehouse, company=None, include_child_warehouses=False):
+	# `select`, not `read`: the selling/buying rows and SellingController reach this with no Item read row
+	frappe.has_permission("Item", ptype="select", throw=True)
+
 	bin_details = {"projected_qty": 0, "actual_qty": 0, "reserved_qty": 0}
 
 	if warehouse:
@@ -1490,6 +1764,12 @@ def get_batch_qty(batch_no, warehouse, item_code):
 @frappe.whitelist()
 @erpnext.normalize_ctx_input(ItemDetailsCtx)
 def apply_price_list(ctx, as_doc=False, doc=None):
+	validate_pricing_context(ctx)
+	return _apply_price_list(ctx, as_doc, doc)
+
+
+@erpnext.normalize_ctx_input(ItemDetailsCtx)
+def _apply_price_list(ctx, as_doc=False, doc=None):
 	"""Apply pricelist on a document-like dict object and return as
 	{'parent': dict, 'children': list}
 
@@ -1547,8 +1827,21 @@ def apply_price_list(ctx, as_doc=False, doc=None):
 
 def apply_price_list_on_item(ctx, doc=None):
 	item_doc = frappe.get_cached_doc("Item", ctx.item_code)
-	item_details = get_price_list_rate(ctx, item_doc)
-	item_details.update(get_pricing_rule_for_item(ctx, doc=doc))
+
+	source_row = get_rate_locked_source_row(ctx, doc)
+	if source_row:
+		item_details = frappe._dict()
+		lock_source_rate(item_details, source_row)
+	else:
+		item_details = get_price_list_rate(ctx, item_doc)
+
+	ctx.conversion_factor = flt(ctx.conversion_factor) or get_conversion_factor(ctx.item_code, ctx.uom).get(
+		"conversion_factor", 1
+	)
+	ctx.stock_qty = flt(ctx.qty) * flt(ctx.conversion_factor)
+
+	if not source_row:
+		item_details.update(get_pricing_rule_for_item(ctx, doc=doc))
 
 	return item_details
 
@@ -1557,9 +1850,9 @@ def get_price_list_currency_and_exchange_rate(ctx: ItemDetailsCtx):
 	if not ctx.price_list:
 		return {}
 
-	if ctx.doctype in ["Quotation", "Sales Order", "Delivery Note", "Sales Invoice"]:
+	if ctx.doctype in ["Quotation", "Sales Order", "Delivery Note", "Sales Invoice", "POS Invoice"]:
 		ctx.update({"exchange_rate": "for_selling"})
-	elif ctx.doctype in ["Purchase Order", "Purchase Receipt", "Purchase Invoice"]:
+	elif ctx.doctype in ["Supplier Quotation", "Purchase Order", "Purchase Receipt", "Purchase Invoice"]:
 		ctx.update({"exchange_rate": "for_buying"})
 
 	price_list_details = get_price_list_details(ctx.price_list)
@@ -1608,6 +1901,16 @@ def get_default_bom(item_code=None):
 
 @frappe.whitelist()
 def get_valuation_rate(item_code, company, warehouse=None):
+	"""Whitelisted entry point: authorise the item, then return its cost price."""
+	frappe.has_permission("Item", doc=item_code, throw=True)
+	frappe.has_permission("Company", doc=company, ptype="select", throw=True)
+
+	return _get_valuation_rate(item_code, company, warehouse)
+
+
+def _get_valuation_rate(item_code, company, warehouse=None):
+	# no guard here: set_valuation_rate calls this for the item and every Product Bundle component,
+	# and a caller entitled to the bundle is not necessarily entitled to each component.
 	if frappe.get_cached_value("Warehouse", warehouse, "is_group"):
 		return {"valuation_rate": 0.0}
 
@@ -1655,7 +1958,7 @@ def get_serial_no(_args, serial_nos=None, sales_order=None):
 
 def update_party_blanket_order(ctx: ItemDetailsCtx, out: ItemDetails | dict):
 	if out["against_blanket_order"]:
-		blanket_order_details = get_blanket_order_details(ctx)
+		blanket_order_details = _get_blanket_order_details(ctx)
 		if blanket_order_details:
 			out.update(blanket_order_details)
 
@@ -1663,11 +1966,23 @@ def update_party_blanket_order(ctx: ItemDetailsCtx, out: ItemDetails | dict):
 @frappe.whitelist()
 @erpnext.normalize_ctx_input(ItemDetailsCtx)
 def get_blanket_order_details(ctx: ItemDetailsCtx):
+	validate_pricing_context(ctx)
+	return _get_blanket_order_details(ctx)
+
+
+@erpnext.normalize_ctx_input(ItemDetailsCtx)
+def _get_blanket_order_details(ctx: ItemDetailsCtx):
 	blanket_order_details = None
 
 	if ctx.item_code:
 		bo = frappe.qb.DocType("Blanket Order")
 		bo_item = frappe.qb.DocType("Blanket Order Item")
+		allowance = flt(
+			frappe.db.get_single_value(
+				"Selling Settings" if ctx.doctype in ("Sales Order", "Quotation") else "Buying Settings",
+				"blanket_order_allowance",
+			)
+		)
 
 		query = (
 			frappe.qb.from_(bo)
@@ -1678,7 +1993,11 @@ def get_blanket_order_details(ctx: ItemDetailsCtx):
 				& (bo_item.item_code == ctx.item_code)
 				& (bo.docstatus == 1)
 				& (bo.name == bo_item.parent)
+				& (bo_item.ordered_qty < bo_item.qty * (1 + allowance / 100))
 			)
+			.orderby(bo.to_date)
+			.orderby(bo.name)
+			.limit(1)
 		)
 
 		if ctx.customer and ctx.doctype == "Sales Order":
@@ -1687,8 +2006,10 @@ def get_blanket_order_details(ctx: ItemDetailsCtx):
 			query = query.where(bo.supplier == ctx.supplier)
 		if ctx.blanket_order:
 			query = query.where(bo.name == ctx.blanket_order)
+		if ctx.currency:
+			query = query.where(bo.currency == ctx.currency)
 		if ctx.transaction_date:
-			query = query.where(bo.to_date >= ctx.transaction_date)
+			query = query.where((bo.from_date <= ctx.transaction_date) & (bo.to_date >= ctx.transaction_date))
 
 		blanket_order_details = query.run(as_dict=True)
 		blanket_order_details = blanket_order_details[0] if blanket_order_details else ""

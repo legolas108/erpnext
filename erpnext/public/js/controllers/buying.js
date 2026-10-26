@@ -25,13 +25,15 @@ erpnext.buying = {
 					};
 				});
 
-				this.frm.set_query("project", function (doc) {
-					return {
-						filters: {
-							company: doc.company,
-						},
-					};
+				const get_project_filters = () => ({
+					query: "erpnext.controllers.queries.get_project_name",
+					filters: {
+						company: this.frm.doc.company,
+					},
 				});
+
+				this.frm.set_query("project", get_project_filters);
+				this.frm.set_query("project", "items", get_project_filters);
 
 				if (
 					this.frm.doc.__islocal &&
@@ -67,7 +69,7 @@ erpnext.buying = {
 				if (this.frm.fields_dict.buying_price_list) {
 					this.frm.set_query("buying_price_list", function () {
 						return {
-							filters: { buying: 1 },
+							filters: { buying: 1, enabled: 1 },
 						};
 					});
 				}
@@ -178,7 +180,11 @@ erpnext.buying = {
 
 						this.frm.set_value("billing_address", r.message.primary_address || "");
 
-						if (frappe.meta.has_field(this.frm.doc.doctype, "shipping_address")) {
+						const is_drop_ship = this.frm.doc.items.some((item) => item.delivered_by_supplier);
+						if (
+							frappe.meta.has_field(this.frm.doc.doctype, "shipping_address") &&
+							!is_drop_ship
+						) {
 							this.frm.set_value("shipping_address", r.message.shipping_address || "");
 						}
 					},
@@ -538,7 +544,7 @@ erpnext.buying.link_to_mrs = function (frm) {
 			var item_length = frm.doc.items.length;
 			for (let item of frm.doc.items) {
 				var qty = item.qty;
-				(r.message[0] || []).forEach(function (d) {
+				(r.message || []).forEach(function (d) {
 					if (
 						d.qty > 0 &&
 						qty > 0 &&
@@ -609,6 +615,9 @@ erpnext.buying.get_items_from_product_bundle = function (frm) {
 				fieldname: "product_bundle",
 				options: "Product Bundle",
 				reqd: 1,
+				get_query: () => {
+					return { filters: { disabled: 0 } };
+				},
 			},
 			{
 				fieldtype: "Currency",
@@ -681,4 +690,11 @@ erpnext.buying.get_items_from_product_bundle = function (frm) {
 	});
 
 	dialog.show();
+};
+erpnext.buying.prevent_past_schedule_dates = function (frm) {
+	if (frm.doc.transaction_date) {
+		frm.fields_dict["schedule_date"].datepicker?.update({
+			minDate: new Date(frm.doc.transaction_date),
+		});
+	}
 };

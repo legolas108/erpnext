@@ -30,6 +30,7 @@ frappe.ui.form.on("Timesheet", {
 			return {
 				filters: {
 					company: frm.doc.company,
+					status: "Open",
 				},
 			};
 		};
@@ -47,11 +48,7 @@ frappe.ui.form.on("Timesheet", {
 
 	refresh: function (frm) {
 		if (frm.doc.docstatus == 1) {
-			if (
-				frm.doc.per_billed < 100 &&
-				frm.doc.total_billable_hours &&
-				frm.doc.total_billable_hours > frm.doc.total_billed_hours
-			) {
+			if (frm.doc.total_billable_hours > frm.doc.total_billed_hours) {
 				frm.add_custom_button(__("Create Sales Invoice"), function () {
 					frm.trigger("make_invoice");
 				});
@@ -93,10 +90,6 @@ frappe.ui.form.on("Timesheet", {
 				}
 			}).addClass("btn-primary");
 		}
-		if (frm.doc.per_billed > 0) {
-			frm.fields_dict["time_logs"].grid.toggle_enable("billing_hours", false);
-			frm.fields_dict["time_logs"].grid.toggle_enable("is_billable", false);
-		}
 
 		let filters = {
 			status: "Open",
@@ -122,6 +115,7 @@ frappe.ui.form.on("Timesheet", {
 			return {
 				filters: {
 					customer: doc.customer,
+					status: "Open",
 				},
 			};
 		});
@@ -232,9 +226,7 @@ frappe.ui.form.on("Timesheet", {
 			fields: fields,
 		});
 
-		dialog.set_primary_action(__("Create Sales Invoice"), () => {
-			var args = dialog.get_values();
-			if (!args) return;
+		dialog.set_primary_action(__("Create Sales Invoice"), (args) => {
 			dialog.hide();
 			return frappe.call({
 				type: "GET",
@@ -259,6 +251,33 @@ frappe.ui.form.on("Timesheet", {
 
 	parent_project: function (frm) {
 		set_project_in_timelog(frm);
+	},
+
+	employee: function (frm) {
+		if (frm.doc.employee && frm.doc.time_logs) {
+			const selected_employee = frm.doc.employee;
+			frm.doc.time_logs.forEach((row) => {
+				if (row.activity_type) {
+					frappe.call({
+						method: "erpnext.projects.doctype.timesheet.timesheet.get_activity_cost",
+						args: {
+							employee: frm.doc.employee,
+							activity_type: row.activity_type,
+							currency: frm.doc.currency,
+						},
+						callback: function (r) {
+							if (r.message) {
+								if (selected_employee !== frm.doc.employee) return;
+								row.billing_rate = r.message["billing_rate"];
+								row.costing_rate = r.message["costing_rate"];
+								frm.refresh_fields("time_logs");
+								calculate_billing_costing_amount(frm, row.doctype, row.name);
+							}
+						},
+					});
+				}
+			});
+		}
 	},
 });
 
@@ -293,6 +312,8 @@ frappe.ui.form.on("Timesheet Detail", {
 		if (frm.doc.parent_project) {
 			frappe.model.set_value(cdt, cdn, "project", frm.doc.parent_project);
 		}
+
+		calculate_time_and_amount(frm);
 	},
 
 	hours: function (frm, cdt, cdn) {
@@ -427,7 +448,7 @@ const set_employee_and_company = function (frm) {
 	const options = { user_id: frappe.session.user };
 	const fields = ["name", "company"];
 	frappe.db.get_value("Employee", options, fields).then(({ message }) => {
-		if (message) {
+		if (message.name && message.company) {
 			// there is an employee with the currently logged in user_id
 			frm.set_value("employee", message.name);
 			frm.set_value("company", message.company);

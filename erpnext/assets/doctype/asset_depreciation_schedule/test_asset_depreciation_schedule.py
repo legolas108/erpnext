@@ -2,27 +2,49 @@
 # See license.txt
 
 import frappe
-from frappe.tests import IntegrationTestCase
-from frappe.utils import cstr, date_diff, flt, getdate
+from frappe.utils import add_months, cstr, flt, get_last_day, getdate
 
 from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 from erpnext.assets.doctype.asset.depreciation import (
 	post_depreciation_entries,
 )
-from erpnext.assets.doctype.asset.test_asset import create_asset, create_asset_data
+from erpnext.assets.doctype.asset.test_asset import create_asset
 from erpnext.assets.doctype.asset_depreciation_schedule.asset_depreciation_schedule import (
 	get_asset_depr_schedule_doc,
+	get_asset_depreciation_schedule,
 	get_depr_schedule,
 )
 from erpnext.assets.doctype.asset_repair.test_asset_repair import create_asset_repair
 from erpnext.assets.doctype.asset_value_adjustment.test_asset_value_adjustment import (
 	make_asset_value_adjustment,
 )
+from erpnext.tests.utils import ERPNextTestSuite
 
 
-class TestAssetDepreciationSchedule(IntegrationTestCase):
-	def setUp(self):
-		create_asset_data()
+class TestAssetDepreciationSchedule(ERPNextTestSuite):
+	def test_complete_opening_periods(self):
+		for available in ("2026-08-01", "2024-02-01"):
+			for frequency in (1, 3, 6, 12):
+				for opening in (1, 4):
+					with self.subTest(available=available, frequency=frequency, opening=opening):
+						start = get_last_day(add_months(available, (opening + 1) * frequency - 1))
+						asset = create_asset(
+							calculate_depreciation=1,
+							available_for_use_date=available,
+							depreciation_start_date=start,
+							frequency_of_depreciation=frequency,
+							total_number_of_depreciations=12,
+							net_purchase_amount=13200,
+							expected_value_after_useful_life=1200,
+							opening_number_of_booked_depreciations=opening,
+							opening_accumulated_depreciation=1000 * opening,
+						)
+						schedule = get_depr_schedule(asset.name, "Draft")
+						self.assertEqual(
+							[row.depreciation_amount for row in schedule], [1000] * (12 - opening)
+						)
+						self.assertEqual(schedule[-1].accumulated_depreciation_amount, 12000)
+						self.assertEqual(getdate(schedule[0].schedule_date), start)
 
 	def test_throw_error_if_another_asset_depr_schedule_exist(self):
 		asset = create_asset(item_code="Macbook Pro", calculate_depreciation=1, submit=1)
@@ -87,7 +109,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2023-10-10",
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			opening_number_of_booked_depreciations=9,
 			opening_accumulated_depreciation=265,
 			depreciation_start_date="2024-07-31",
@@ -127,7 +149,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2023-10-10",
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			opening_number_of_booked_depreciations=9,
 			opening_accumulated_depreciation=265.30,
 			depreciation_start_date="2024-07-31",
@@ -165,7 +187,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2023-11-01",
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			opening_number_of_booked_depreciations=4,
 			opening_accumulated_depreciation=223.15,
 			depreciation_start_date="2024-12-31",
@@ -529,7 +551,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			depreciation_start_date="2023-03-31",
 			frequency_of_depreciation=1,
 			total_number_of_depreciations=12,
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			opening_accumulated_depreciation=64.52,
 			opening_number_of_booked_depreciations=2,
 			submit=1,
@@ -815,7 +837,6 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 	def test_depreciation_on_return_of_sold_asset(self):
 		from erpnext.controllers.sales_and_purchase_return import make_return_doc
 
-		create_asset_data()
 		asset = create_asset(item_code="Macbook Pro", calculate_depreciation=1, submit=1)
 		post_depreciation_entries(getdate("2021-09-30"))
 
@@ -851,7 +872,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			depreciation_start_date="2023-03-31",
 			frequency_of_depreciation=1,
 			total_number_of_depreciations=12,
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			opening_accumulated_depreciation=64.52,
 			opening_number_of_booked_depreciations=2,
 			submit=1,
@@ -925,7 +946,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			depreciation_start_date="2021-12-31",
 			frequency_of_depreciation=12,
 			total_number_of_depreciations=3,
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			submit=1,
 		)
 		post_depreciation_entries(date="2021-12-31")
@@ -1014,7 +1035,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			depreciation_start_date="2021-12-31",
 			frequency_of_depreciation=12,
 			total_number_of_depreciations=3,
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			submit=1,
 		)
 		post_depreciation_entries(date="2021-12-31")
@@ -1093,7 +1114,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			rate_of_depreciation=50,
 			frequency_of_depreciation=12,
 			total_number_of_depreciations=3,
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			submit=1,
 		)
 		post_depreciation_entries(date="2021-12-31")
@@ -1161,3 +1182,28 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			for d in get_depr_schedule(asset.name, "Active")
 		]
 		self.assertEqual(schedules, expected_depreciation_after_repair)
+
+	def test_schedule_is_read_only_with_asset_permission(self):
+		asset = create_monthly_asset()
+
+		for method in (get_depr_schedule, get_asset_depr_schedule_doc):
+			self.assertRaises(frappe.PermissionError, frappe.is_whitelisted, method)
+
+		self.assertEqual(get_asset_depreciation_schedule(asset.name, "Active").asset, asset.name)
+		with self.set_user("Guest"):
+			self.assertRaises(frappe.PermissionError, get_asset_depreciation_schedule, asset.name, "Active")
+
+
+def create_monthly_asset(**args):
+	defaults = {
+		"item_code": "Macbook Pro",
+		"net_purchase_amount": 1200,
+		"calculate_depreciation": 1,
+		"depreciation_method": "Straight Line",
+		"available_for_use_date": "2023-01-01",
+		"depreciation_start_date": "2023-01-31",
+		"frequency_of_depreciation": 1,
+		"total_number_of_depreciations": 12,
+		"submit": 1,
+	}
+	return create_asset(**{**defaults, **args})

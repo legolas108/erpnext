@@ -5,9 +5,10 @@
  "allow_rename": 1,
  "autoname": "naming_series:",
  "creation": "2013-03-07 18:50:30",
- "description": "Potential Sales Deal",
+ "description": "A potential sale to a lead or customer.",
  "doctype": "DocType",
  "document_type": "Document",
+ "documentation": "https://docs.frappe.io/erpnext/user/manual/en/opportunity",
  "editable_grid": 1,
  "email_append_to": 1,
  "engine": "InnoDB",
@@ -44,13 +45,12 @@
   "column_break_17",
   "opportunity_amount",
   "base_opportunity_amount",
-  "section_break_analytics",
+  "utm_analytics_section",
   "utm_source",
-  "utm_content",
+  "utm_medium",
   "column_break_emai",
   "utm_campaign",
-  "column_break_whcu",
-  "utm_medium",
+  "utm_content",
   "more_info",
   "company",
   "transaction_date",
@@ -159,6 +159,7 @@
   {
    "fieldname": "opportunity_type",
    "fieldtype": "Link",
+   "in_import_template": 1,
    "in_list_view": 1,
    "label": "Opportunity Type",
    "oldfieldname": "enquiry_type",
@@ -189,6 +190,7 @@
   {
    "fieldname": "expected_closing",
    "fieldtype": "Date",
+   "in_import_template": 1,
    "label": "Expected Closing Date",
    "no_copy": 1
   },
@@ -206,6 +208,7 @@
   {
    "fieldname": "opportunity_amount",
    "fieldtype": "Currency",
+   "in_import_template": 1,
    "label": "Opportunity Amount",
    "options": "currency"
   },
@@ -217,6 +220,7 @@
    "default": "Prospecting",
    "fieldname": "sales_stage",
    "fieldtype": "Link",
+   "in_import_template": 1,
    "label": "Sales Stage",
    "options": "Sales Stage"
   },
@@ -304,12 +308,14 @@
   {
    "fieldname": "contact_email",
    "fieldtype": "Data",
+   "in_global_search": 1,
    "label": "Contact Email",
    "options": "Email"
   },
   {
    "fieldname": "contact_mobile",
    "fieldtype": "Data",
+   "in_global_search": 1,
    "label": "Contact Mobile",
    "options": "Phone"
   },
@@ -630,15 +636,6 @@
    "print_hide": 1
   },
   {
-   "fieldname": "section_break_analytics",
-   "fieldtype": "Section Break",
-   "label": "Analytics"
-  },
-  {
-   "fieldname": "column_break_whcu",
-   "fieldtype": "Column Break"
-  },
-  {
    "fieldname": "utm_medium",
    "fieldtype": "Link",
    "label": "Medium",
@@ -650,13 +647,19 @@
    "fieldtype": "Data",
    "label": "Content",
    "print_hide": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "utm_analytics_section",
+   "fieldtype": "Section Break",
+   "label": "Analytics"
   }
  ],
  "grid_page_length": 50,
- "icon": "fa fa-info-sign",
+ "icon": "user-star",
  "idx": 195,
  "links": [],
- "modified": "2025-08-11 13:35:39.476016",
+ "modified": "2026-09-30 23:24:44.044604",
  "modified_by": "Administrator",
  "module": "CRM",
  "name": "Opportunity",

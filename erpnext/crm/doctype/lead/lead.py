@@ -11,7 +11,7 @@ from frappe.contacts.doctype.address.address import get_default_address
 from frappe.contacts.doctype.contact.contact import get_default_contact
 from frappe.email.inbox import link_communication_to_document
 from frappe.model.mapper import get_mapped_doc
-from frappe.utils import comma_and, get_link_to_form, has_gravatar, validate_email_address
+from frappe.utils import comma_and, get_link_to_form, validate_email_address
 
 from erpnext.accounts.party import set_taxes
 from erpnext.controllers.selling_controller import SellingController
@@ -142,7 +142,7 @@ class Lead(SellingController, CRMNote):
 				frappe.throw(_("A Lead requires either a person's name or an organization's name"))
 			elif self.company_name:
 				self.lead_name = self.company_name
-			else:
+			elif self.email_id:
 				self.lead_name = self.email_id.split("@")[0]
 
 	def set_title(self):
@@ -175,9 +175,6 @@ class Lead(SellingController, CRMNote):
 			if self.email_id == self.lead_owner:
 				frappe.throw(_("Lead Owner cannot be same as the Lead Email Address"))
 
-			if self.is_new() or not self.image:
-				self.image = has_gravatar(self.email_id)
-
 	def link_to_contact(self):
 		# update contact links
 		if self.contact_doc:
@@ -202,17 +199,17 @@ class Lead(SellingController, CRMNote):
 			lead_row.db_update()
 
 	def remove_link_from_prospect(self):
-		prospects = self.get_linked_prospects()
+		linked_prospects = self.get_linked_prospects()
 
-		for d in prospects:
-			prospect = frappe.get_doc("Prospect", d.parent)
+		for linked_prospect in linked_prospects:
+			prospect = frappe.get_doc("Prospect", linked_prospect.parent)
 			if len(prospect.get("leads")) == 1:
 				prospect.delete(ignore_permissions=True)
 			else:
 				to_remove = None
-				for d in prospect.get("leads"):
-					if d.lead == self.name:
-						to_remove = d
+				for lead in prospect.get("leads"):
+					if lead.lead == self.name:
+						to_remove = lead
 
 				if to_remove:
 					prospect.remove(to_remove)
@@ -240,7 +237,9 @@ class Lead(SellingController, CRMNote):
 		return frappe.db.get_value("Quotation", {"party_name": self.name, "docstatus": 1, "status": "Lost"})
 
 	@frappe.whitelist()
-	def create_prospect_and_contact(self, data):
+	def create_prospect_and_contact(self, data: dict):
+		self.check_permission("write")
+
 		data = frappe._dict(data)
 		if data.create_contact:
 			self.create_contact()
@@ -451,6 +450,7 @@ def get_lead_details(lead, posting_date=None, company=None, doctype=None):
 	out = frappe._dict()
 
 	lead_doc = frappe.get_doc("Lead", lead)
+	lead_doc.check_permission()
 	lead = lead_doc
 
 	out.update(
@@ -481,8 +481,16 @@ def get_lead_details(lead, posting_date=None, company=None, doctype=None):
 
 
 @frappe.whitelist()
-def make_lead_from_communication(communication, ignore_communication_links=False):
+def make_lead_from_communication(communication: str, ignore_communication_links: bool = False):
 	"""raise a issue from email"""
+
+	# Communication grants read to `All` only for the owner and carries a has_permission hook, so doc=
+	# is what decides access.
+	frappe.has_permission("Communication", doc=communication, throw=True)
+
+	# both paths end in a Lead: the insert path checks `create`, but the path reusing an existing Lead
+	# required nothing at all.
+	frappe.has_permission("Lead", ptype="create", throw=True)
 
 	doc = frappe.get_doc("Communication", communication)
 	lead_name = None
@@ -500,7 +508,6 @@ def make_lead_from_communication(communication, ignore_communication_links=False
 			}
 		)
 		lead.flags.ignore_mandatory = True
-		lead.flags.ignore_permissions = True
 		lead.insert()
 
 		lead_name = lead.name
@@ -529,11 +536,14 @@ def get_lead_with_phone_number(number):
 	return lead
 
 
-@frappe.whitelist()
-def add_lead_to_prospect(lead, prospect):
+@frappe.whitelist(methods=["POST"])
+def add_lead_to_prospect(lead: str, prospect: str):
+	if lead:
+		frappe.has_permission("Lead", "read", lead, throw=True)
+
 	prospect = frappe.get_doc("Prospect", prospect)
 	prospect.append("leads", {"lead": lead})
-	prospect.save(ignore_permissions=True)
+	prospect.save()
 
 	carry_forward_communication_and_comments = frappe.db.get_single_value(
 		"CRM Settings", "carry_forward_communication_and_comments"

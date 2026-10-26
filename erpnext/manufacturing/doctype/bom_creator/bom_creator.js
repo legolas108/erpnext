@@ -64,6 +64,13 @@ frappe.ui.form.on("BOM Creator", {
 					options: "Item",
 					reqd: 1,
 				},
+				{
+					label: __("Is Phantom BOM"),
+					fieldtype: "Check",
+					fieldname: "is_phantom",
+					default: 0,
+					change: toggle_filter,
+				},
 				{ fieldtype: "Column Break" },
 				{
 					label: __("Quantity"),
@@ -72,7 +79,7 @@ frappe.ui.form.on("BOM Creator", {
 					reqd: 1,
 					default: 1.0,
 				},
-				{ fieldtype: "Section Break" },
+				{ fieldtype: "Section Break", depends_on: "eval:!doc.is_phantom" },
 				{
 					label: __("Currency"),
 					fieldtype: "Link",
@@ -89,7 +96,7 @@ frappe.ui.form.on("BOM Creator", {
 					reqd: 1,
 					default: 1.0,
 				},
-				{ fieldtype: "Section Break" },
+				{ fieldtype: "Section Break", depends_on: "eval:!doc.is_phantom" },
 				{
 					label: __("Routing"),
 					fieldtype: "Link",
@@ -99,14 +106,39 @@ frappe.ui.form.on("BOM Creator", {
 			],
 			primary_action_label: __("Create"),
 			primary_action: (values) => {
-				values.doctype = frm.doc.doctype;
-				frappe.db.insert(values).then((doc) => {
-					frappe.set_route("Form", doc.doctype, doc.name);
+				frappe.db.get_value("Item", values.item_code, "is_stock_item").then((r) => {
+					if (r.message) {
+						if (r.message.is_stock_item && values.is_phantom) {
+							frappe.throw(
+								__("Phantom BOM cannot be created for stock item {0}.", [values.item_code])
+							);
+						} else if (!r.message.is_stock_item && !values.is_phantom) {
+							frappe.throw(
+								__("Non-phantom BOM cannot be created for non-stock item {0}.", [
+									values.item_code,
+								])
+							);
+						} else {
+							values.doctype = frm.doc.doctype;
+							frappe.db.insert(values).then((doc) => {
+								frappe.set_route("Form", doc.doctype, doc.name);
+							});
+						}
+					}
 				});
 			},
 		});
 
-		dialog.fields_dict.item_code.get_query = "erpnext.controllers.queries.item_query";
+		function toggle_filter() {
+			dialog.fields_dict.item_code.get_query = {
+				query: "erpnext.controllers.queries.item_query",
+				filters: {
+					is_stock_item: !dialog.fields_dict.is_phantom.value,
+				},
+			};
+		}
+		toggle_filter();
+
 		dialog.show();
 	},
 
@@ -176,13 +208,6 @@ frappe.ui.form.on("BOM Creator", {
 });
 
 frappe.ui.form.on("BOM Creator Item", {
-	item_code(frm, cdt, cdn) {
-		let item = frappe.get_doc(cdt, cdn);
-		if (item.item_code && item.is_root) {
-			frappe.model.set_value(cdt, cdn, "fg_item", item.item_code);
-		}
-	},
-
 	do_not_explode(frm, cdt, cdn) {
 		let item = frappe.get_doc(cdt, cdn);
 		if (!item.do_not_explode) {
@@ -205,6 +230,20 @@ frappe.ui.form.on("BOM Creator Item", {
 });
 
 erpnext.bom.BomConfigurator = class BomConfigurator extends erpnext.TransactionController {
+	item_code(doc, cdt, cdn) {
+		if (cdt !== "BOM Creator Item") {
+			return;
+		}
+
+		let item = frappe.get_doc(cdt, cdn);
+		if (item.item_code && item.is_root) {
+			frappe.model.set_value(cdt, cdn, "fg_item", item.item_code);
+		}
+
+		// BOM Creator does not support TransactionController's server-side item selection.
+		return this.process_item_selection(doc, cdt, cdn);
+	}
+
 	conversion_rate(doc) {
 		if (this.frm.doc.currency === this.get_company_currency()) {
 			this.frm.set_value("conversion_rate", 1.0);

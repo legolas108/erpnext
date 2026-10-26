@@ -4,52 +4,55 @@
 
 import frappe
 from frappe import _, scrub
-from frappe.utils import getdate, today
+from frappe.utils import get_datetime, getdate, today
 
-from erpnext.stock.report.stock_analytics.stock_analytics import get_period, get_period_date_ranges
+from erpnext.stock.report.stock_analytics.stock_analytics import (
+	get_period,
+	get_period_columns,
+	get_period_date_ranges,
+)
 
 WORK_ORDER_STATUS_LIST = ["Not Started", "Overdue", "Pending", "Completed", "Closed", "Stopped"]
 
 
 def execute(filters=None):
-	columns = get_columns(filters)
-	data, chart = get_data(filters, columns)
+	period_columns = get_period_columns(filters)
+	columns = get_columns(period_columns)
+	data, chart = get_data(filters, period_columns)
 	return columns, data, None, chart
 
 
-def get_columns(filters):
+def get_columns(period_columns):
 	columns = [{"label": _("Status"), "fieldname": "status", "fieldtype": "Data", "width": 140}]
-	ranges = get_period_date_ranges(filters)
-
-	for _dummy, end_date in ranges:
-		period = get_period(end_date, filters)
-		columns.append({"label": _(period), "fieldname": scrub(period), "fieldtype": "Float", "width": 120})
+	columns.extend(period_columns)
 
 	return columns
 
 
 def get_work_orders(filters):
 	from_date = filters.get("from_date")
-	to_date = filters.get("to_date")
+	# `creation` and `actual_end_date` are datetime columns, so a bare date upper
+	# bound would coerce to midnight and drop records created later on the last day.
+	to_date = get_datetime(filters.get("to_date")).replace(hour=23, minute=59, second=59)
 
 	WorkOrder = frappe.qb.DocType("Work Order")
 
 	return (
-		frappe.qb.from_(WorkOrder)
-		.select(WorkOrder.creation, WorkOrder.actual_end_date, WorkOrder.planned_end_date, WorkOrder.status)
+		frappe.qb.get_query(
+			"Work Order",
+			fields=["creation", "actual_end_date", "planned_end_date", "status"],
+			filters={"docstatus": 1, "company": filters.get("company")},
+			ignore_permissions=False,
+		)
 		.where(
-			(WorkOrder.docstatus == 1)
-			& (WorkOrder.company == filters.get("company"))
-			& (
-				(WorkOrder.creation.between(from_date, to_date))
-				| (WorkOrder.actual_end_date.between(from_date, to_date))
-			)
+			(WorkOrder.creation.between(from_date, to_date))
+			| (WorkOrder.actual_end_date.between(from_date, to_date))
 		)
 		.run(as_dict=True)
 	)
 
 
-def get_data(filters, columns):
+def get_data(filters, period_columns):
 	ranges = build_ranges(filters)
 	period_labels = [scrub(pd) for _fd, _td, pd in ranges]
 	periodic_data = {status: {pd: 0 for pd in period_labels} for status in WORK_ORDER_STATUS_LIST}
@@ -84,7 +87,7 @@ def get_data(filters, columns):
 			row[scrub(period)] = periodic_data[status].get(scrub(period), 0)
 		data.append(row)
 
-	chart = get_chart_data(periodic_data, columns)
+	chart = get_chart_data(periodic_data, period_columns)
 	return data, chart
 
 
@@ -103,9 +106,9 @@ def build_ranges(filters):
 	return ranges
 
 
-def get_chart_data(periodic_data, columns):
-	period_labels = [d.get("label") for d in columns[1:]]
-	period_fieldnames = [d.get("fieldname") for d in columns[1:]]
+def get_chart_data(periodic_data, period_columns):
+	period_labels = [col.get("label") for col in period_columns]
+	period_fieldnames = [col.get("fieldname") for col in period_columns]
 
 	datasets = []
 	for status in WORK_ORDER_STATUS_LIST:

@@ -22,6 +22,7 @@ class SalesInvoiceItem(Document):
 
 		actual_batch_qty: DF.Float
 		actual_qty: DF.Float
+		against_pick_list: DF.Link | None
 		allow_zero_valuation_rate: DF.Check
 		amount: DF.Currency
 		apply_tds: DF.Check
@@ -64,6 +65,7 @@ class SalesInvoiceItem(Document):
 		item_name: DF.Data
 		item_tax_rate: DF.SmallText | None
 		item_tax_template: DF.Link | None
+		mapped_additional_discount_amount: DF.Currency
 		margin_rate_or_amount: DF.Float
 		margin_type: DF.Literal["", "Percentage", "Amount"]
 		net_amount: DF.Currency
@@ -72,6 +74,7 @@ class SalesInvoiceItem(Document):
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data
+		pick_list_item: DF.Data | None
 		pos_invoice: DF.Link | None
 		pos_invoice_item: DF.Data | None
 		price_list_rate: DF.Currency

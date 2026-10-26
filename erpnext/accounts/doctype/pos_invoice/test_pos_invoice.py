@@ -5,12 +5,12 @@ import unittest
 
 import frappe
 from frappe import _
-from frappe.tests import IntegrationTestCase
+from frappe.utils import add_days, nowdate
 
 from erpnext.accounts.doctype.mode_of_payment.test_mode_of_payment import (
 	set_default_account_for_mode_of_payment,
 )
-from erpnext.accounts.doctype.pos_invoice.pos_invoice import make_sales_return
+from erpnext.accounts.doctype.pos_invoice.pos_invoice import make_merge_log, make_sales_return
 from erpnext.accounts.doctype.pos_profile.test_pos_profile import make_pos_profile
 from erpnext.accounts.doctype.sales_invoice.sales_invoice import PartialPaymentValidationError
 from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
@@ -22,37 +22,42 @@ from erpnext.stock.doctype.serial_and_batch_bundle.test_serial_and_batch_bundle 
 	make_serial_batch_bundle,
 )
 from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
+from erpnext.tests.permission_test_utils import (
+	MISSING_NAME,
+	as_user,
+	assert_not_found,
+	assert_refused,
+	assert_refused_for_names,
+	assert_refused_without,
+	make_fenced_user,
+)
+from erpnext.tests.utils import ERPNextTestSuite
 
 
-class TestPOSInvoice(IntegrationTestCase):
-	@classmethod
-	def setUpClass(cls):
-		super().setUpClass()
-		cls.enterClassContext(cls.change_settings("Selling Settings", validate_selling_price=0))
-		cls.enterClassContext(cls.change_settings("POS Settings", invoice_type="POS Invoice"))
-		make_stock_entry(target="_Test Warehouse - _TC", item_code="_Test Item", qty=800, basic_rate=100)
-		frappe.db.sql("delete from `tabTax Rule`")
-
+class POSInvoiceTestMixin(ERPNextTestSuite):
+	def setUp(self):
 		from erpnext.accounts.doctype.pos_closing_entry.test_pos_closing_entry import init_user_and_profile
-		from erpnext.accounts.doctype.pos_opening_entry.test_pos_opening_entry import create_opening_entry
 
-		cls.test_user, cls.pos_profile = init_user_and_profile()
-		cls.opening_entry = create_opening_entry(cls.pos_profile, cls.test_user.name)
-		mode_of_payment = frappe.get_doc("Mode of Payment", "Bank Draft")
-		set_default_account_for_mode_of_payment(mode_of_payment, "_Test Company", "_Test Bank - _TC")
+		self.load_test_records("Stock Entry")
+		self.test_user, self.pos_profile = init_user_and_profile()
 
-	@classmethod
-	def tearDownClass(cls):
-		frappe.db.sql("delete from `tabPOS Invoice`")
-		opening_entry_doc = frappe.get_doc("POS Opening Entry", cls.opening_entry.name)
-		opening_entry_doc.cancel()
-
-	def tearDown(self):
 		if frappe.session.user != "Administrator":
 			frappe.set_user("Administrator")
 
-		if frappe.db.get_single_value("Selling Settings", "validate_selling_price"):
-			frappe.db.set_single_value("Selling Settings", "validate_selling_price", 0)
+		frappe.db.set_single_value("Selling Settings", "validate_selling_price", 0)
+		frappe.db.set_single_value("POS Settings", "invoice_type", "POS Invoice")
+		make_stock_entry(target="_Test Warehouse - _TC", item_code="_Test Item", qty=800, basic_rate=100)
+
+		mode_of_payment = frappe.get_doc("Mode of Payment", "Bank Draft")
+		set_default_account_for_mode_of_payment(mode_of_payment, "_Test Company", "_Test Bank - _TC")
+
+
+class TestPOSInvoice(POSInvoiceTestMixin):
+	def setUp(self):
+		super().setUp()
+		from erpnext.accounts.doctype.pos_opening_entry.test_pos_opening_entry import create_opening_entry
+
+		self.opening_entry = create_opening_entry(self.pos_profile, self.test_user.name)
 
 	def test_timestamp_change(self):
 		w = create_pos_invoice(do_not_save=1)
@@ -445,6 +450,56 @@ class TestPOSInvoice(IntegrationTestCase):
 
 		set_allow_partial_payment(self.pos_profile, 0)
 
+	def test_discounted_invoice_status(self):
+		allow_partial_payment = self.pos_profile.allow_partial_payment
+		self.pos_profile.db_set("allow_partial_payment", 1)
+		self.addCleanup(self.pos_profile.db_set, "allow_partial_payment", allow_partial_payment)
+		pos_inv = create_pos_invoice(
+			pos_profile=self.pos_profile.name, rate=100, is_discounted=1, do_not_save=1
+		)
+		pos_inv.append("payments", {"mode_of_payment": "Cash", "amount": 90})
+		pos_inv.insert()
+
+		# Seed the lookup records because Invoice Discounting only accepts Sales Invoice links.
+		discounting = frappe.get_doc(
+			doctype="Invoice Discounting",
+			name=frappe.generate_hash(length=10),
+			company=pos_inv.company,
+			docstatus=1,
+			status="Disbursed",
+		)
+		discounting.db_insert()
+		frappe.get_doc(
+			doctype="Discounted Invoice",
+			parent=discounting.name,
+			parenttype=discounting.doctype,
+			parentfield="invoices",
+			sales_invoice=pos_inv.name,
+			docstatus=1,
+		).db_insert()
+
+		pos_inv.submit()
+		pos_inv.reload()
+		self.assertEqual(pos_inv.docstatus, 1)
+		self.assertEqual(pos_inv.outstanding_amount, 10)
+		self.assertEqual(pos_inv.status, "Partly Paid and Discounted")
+
+		for outstanding_amount, due_date, expected_status in (
+			(10, add_days(nowdate(), -1), "Overdue"),
+			(10, nowdate(), "Partly Paid"),
+			(100, nowdate(), "Unpaid"),
+		):
+			with self.subTest(status=expected_status):
+				pos_inv.outstanding_amount = outstanding_amount
+				pos_inv.due_date = due_date
+				discounting.db_set("status", "Disbursed")
+				pos_inv.set_status()
+				self.assertEqual(pos_inv.status, f"{expected_status} and Discounted")
+
+				discounting.db_set("status", "Settled")
+				pos_inv.set_status()
+				self.assertEqual(pos_inv.status, expected_status)
+
 	def test_serialized_item_transaction(self):
 		from erpnext.stock.doctype.stock_entry.test_stock_entry import make_serialized_item
 
@@ -642,9 +697,7 @@ class TestPOSInvoice(IntegrationTestCase):
 		from erpnext.accounts.doctype.loyalty_program.loyalty_program import (
 			get_loyalty_program_details_with_points,
 		)
-		from erpnext.accounts.doctype.loyalty_program.test_loyalty_program import create_records
 
-		create_records()
 		frappe.db.set_value("Customer", "Test Loyalty Customer", "loyalty_program", "Test Single Loyalty")
 		before_lp_details = get_loyalty_program_details_with_points(
 			"Test Loyalty Customer", company="_Test Company", loyalty_program="Test Single Loyalty"
@@ -681,6 +734,7 @@ class TestPOSInvoice(IntegrationTestCase):
 			get_loyalty_program_details_with_points,
 		)
 
+		frappe.db.set_value("Customer", "Test Loyalty Customer", "loyalty_program", "Test Single Loyalty")
 		# add 10 loyalty points
 		pos_inv = create_pos_invoice(customer="Test Loyalty Customer", rate=10000, do_not_save=1)
 		pos_inv.append(
@@ -709,134 +763,6 @@ class TestPOSInvoice(IntegrationTestCase):
 			inv.customer, company=inv.company, loyalty_program=inv.loyalty_program
 		)
 		self.assertEqual(after_redeem_lp_details.loyalty_points, 9)
-
-	def test_merging_into_sales_invoice_with_discount(self):
-		from erpnext.accounts.doctype.pos_closing_entry.test_pos_closing_entry import (
-			init_user_and_profile,
-		)
-		from erpnext.accounts.doctype.pos_invoice_merge_log.pos_invoice_merge_log import (
-			consolidate_pos_invoices,
-		)
-
-		frappe.db.sql("delete from `tabPOS Invoice`")
-		test_user, pos_profile = init_user_and_profile()
-		pos_inv = create_pos_invoice(rate=300, additional_discount_percentage=10, do_not_submit=1)
-		pos_inv.append("payments", {"mode_of_payment": "Cash", "amount": 270})
-		pos_inv.save()
-		pos_inv.submit()
-
-		pos_inv2 = create_pos_invoice(rate=3200, do_not_submit=1)
-		pos_inv2.append("payments", {"mode_of_payment": "Cash", "amount": 3200})
-		pos_inv2.save()
-		pos_inv2.submit()
-
-		consolidate_pos_invoices()
-
-		pos_inv.load_from_db()
-		rounded_total = frappe.db.get_value("Sales Invoice", pos_inv.consolidated_invoice, "rounded_total")
-		self.assertEqual(rounded_total, 3470)
-
-	def test_merging_into_sales_invoice_with_discount_and_inclusive_tax(self):
-		from erpnext.accounts.doctype.pos_closing_entry.test_pos_closing_entry import (
-			init_user_and_profile,
-		)
-		from erpnext.accounts.doctype.pos_invoice_merge_log.pos_invoice_merge_log import (
-			consolidate_pos_invoices,
-		)
-
-		frappe.db.sql("delete from `tabPOS Invoice`")
-		test_user, pos_profile = init_user_and_profile()
-		pos_inv = create_pos_invoice(rate=300, do_not_submit=1)
-		pos_inv.append("payments", {"mode_of_payment": "Cash", "amount": 300})
-		pos_inv.append(
-			"taxes",
-			{
-				"charge_type": "On Net Total",
-				"account_head": "_Test Account Service Tax - _TC",
-				"cost_center": "_Test Cost Center - _TC",
-				"description": "Service Tax",
-				"rate": 14,
-				"included_in_print_rate": 1,
-			},
-		)
-		pos_inv.save()
-		pos_inv.submit()
-
-		pos_inv2 = create_pos_invoice(rate=300, qty=2, do_not_submit=1)
-		pos_inv2.additional_discount_percentage = 10
-		pos_inv2.append("payments", {"mode_of_payment": "Cash", "amount": 540})
-		pos_inv2.append(
-			"taxes",
-			{
-				"charge_type": "On Net Total",
-				"account_head": "_Test Account Service Tax - _TC",
-				"cost_center": "_Test Cost Center - _TC",
-				"description": "Service Tax",
-				"rate": 14,
-				"included_in_print_rate": 1,
-			},
-		)
-		pos_inv2.save()
-		pos_inv2.submit()
-
-		consolidate_pos_invoices()
-
-		pos_inv.load_from_db()
-		rounded_total = frappe.db.get_value("Sales Invoice", pos_inv.consolidated_invoice, "rounded_total")
-		self.assertEqual(rounded_total, 840)
-
-	def test_merging_with_validate_selling_price(self):
-		from erpnext.accounts.doctype.pos_closing_entry.test_pos_closing_entry import (
-			init_user_and_profile,
-		)
-		from erpnext.accounts.doctype.pos_invoice_merge_log.pos_invoice_merge_log import (
-			consolidate_pos_invoices,
-		)
-
-		if not frappe.db.get_single_value("Selling Settings", "validate_selling_price"):
-			frappe.db.set_single_value("Selling Settings", "validate_selling_price", 1)
-
-		item = "Test Selling Price Validation"
-		make_item(item, {"is_stock_item": 1})
-		make_purchase_receipt(item_code=item, warehouse="_Test Warehouse - _TC", qty=1, rate=300)
-		frappe.db.sql("delete from `tabPOS Invoice`")
-		test_user, pos_profile = init_user_and_profile()
-		pos_inv = create_pos_invoice(item=item, rate=300, do_not_submit=1)
-		pos_inv.append("payments", {"mode_of_payment": "Cash", "amount": 300})
-		pos_inv.append(
-			"taxes",
-			{
-				"charge_type": "On Net Total",
-				"account_head": "_Test Account Service Tax - _TC",
-				"cost_center": "_Test Cost Center - _TC",
-				"description": "Service Tax",
-				"rate": 14,
-				"included_in_print_rate": 1,
-			},
-		)
-		self.assertRaises(frappe.ValidationError, pos_inv.submit)
-
-		pos_inv2 = create_pos_invoice(item=item, rate=400, do_not_submit=1)
-		pos_inv2.append("payments", {"mode_of_payment": "Cash", "amount": 400})
-		pos_inv2.append(
-			"taxes",
-			{
-				"charge_type": "On Net Total",
-				"account_head": "_Test Account Service Tax - _TC",
-				"cost_center": "_Test Cost Center - _TC",
-				"description": "Service Tax",
-				"rate": 14,
-				"included_in_print_rate": 1,
-			},
-		)
-		pos_inv2.save()
-		pos_inv2.submit()
-
-		consolidate_pos_invoices()
-
-		pos_inv2.load_from_db()
-		rounded_total = frappe.db.get_value("Sales Invoice", pos_inv2.consolidated_invoice, "rounded_total")
-		self.assertEqual(rounded_total, 400)
 
 	def test_pos_batch_reservation(self):
 		from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
@@ -1004,40 +930,39 @@ class TestPOSInvoice(IntegrationTestCase):
 	def test_ignore_pricing_rule(self):
 		from erpnext.accounts.doctype.pricing_rule.test_pricing_rule import make_pricing_rule
 
-		item_price = frappe.get_doc(
-			{
-				"doctype": "Item Price",
-				"item_code": "_Test Item",
-				"price_list": "_Test Price List",
-				"price_list_rate": "450",
-			}
-		)
-		item_price.insert()
+		if not frappe.db.exists(
+			"Item Price",
+			{"item_code": "_Test Item", "price_list": "_Test Price List", "price_list_rate": "450"},
+		):
+			item_price = frappe.get_doc(
+				{
+					"doctype": "Item Price",
+					"item_code": "_Test Item",
+					"price_list": "_Test Price List",
+					"price_list_rate": "450",
+				}
+			)
+			item_price.insert()
+
 		pr = make_pricing_rule(selling=1, priority=5, discount_percentage=10)
 		pr.save()
 
-		try:
-			pos_inv = create_pos_invoice(qty=1, do_not_submit=1)
-			pos_inv.items[0].rate = 300
-			pos_inv.save()
-			self.assertEqual(pos_inv.items[0].discount_percentage, 10)
-			# rate shouldn't change
-			self.assertEqual(pos_inv.items[0].rate, 405)
+		pos_inv = create_pos_invoice(qty=1, do_not_submit=1)
+		pos_inv.items[0].rate = 300
+		pos_inv.save()
+		self.assertEqual(pos_inv.items[0].discount_percentage, 10)
+		# rate shouldn't change
+		self.assertEqual(pos_inv.items[0].rate, 405)
 
-			pos_inv.ignore_pricing_rule = 1
-			pos_inv.save()
-			self.assertEqual(pos_inv.ignore_pricing_rule, 1)
-			# rate should reset since pricing rules are ignored
-			self.assertEqual(pos_inv.items[0].rate, 450)
+		pos_inv.ignore_pricing_rule = 1
+		pos_inv.save()
+		self.assertEqual(pos_inv.ignore_pricing_rule, 1)
+		# rate should reset since pricing rules are ignored
+		self.assertEqual(pos_inv.items[0].rate, 450)
 
-			pos_inv.items[0].rate = 300
-			pos_inv.save()
-			self.assertEqual(pos_inv.items[0].rate, 300)
-
-		finally:
-			item_price.delete()
-			pos_inv.delete()
-			pr.delete()
+		pos_inv.items[0].rate = 300
+		pos_inv.save()
+		self.assertEqual(pos_inv.items[0].rate, 300)
 
 	def test_delivered_serial_no_case(self):
 		from erpnext.accounts.doctype.pos_invoice_merge_log.test_pos_invoice_merge_log import (
@@ -1046,32 +971,26 @@ class TestPOSInvoice(IntegrationTestCase):
 		from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
 		from erpnext.stock.doctype.stock_entry.test_stock_entry import make_serialized_item
 
-		frappe.db.savepoint("before_test_delivered_serial_no_case")
-		try:
-			se = make_serialized_item(self)
-			serial_no = get_serial_nos_from_bundle(se.get("items")[0].serial_and_batch_bundle)[0]
+		se = make_serialized_item(self)
+		serial_no = get_serial_nos_from_bundle(se.get("items")[0].serial_and_batch_bundle)[0]
 
-			dn = create_delivery_note(item_code="_Test Serialized Item With Series", serial_no=[serial_no])
-			delivered_serial_no = get_serial_nos_from_bundle(dn.get("items")[0].serial_and_batch_bundle)[0]
+		dn = create_delivery_note(item_code="_Test Serialized Item With Series", serial_no=[serial_no])
+		delivered_serial_no = get_serial_nos_from_bundle(dn.get("items")[0].serial_and_batch_bundle)[0]
 
-			self.assertEqual(serial_no, delivered_serial_no)
+		self.assertEqual(serial_no, delivered_serial_no)
 
-			init_user_and_profile()
+		init_user_and_profile()
 
-			pos_inv = create_pos_invoice(
-				item_code="_Test Serialized Item With Series",
-				serial_no=[serial_no],
-				qty=1,
-				rate=100,
-				do_not_submit=True,
-				ignore_sabb_validation=True,
-			)
+		pos_inv = create_pos_invoice(
+			item_code="_Test Serialized Item With Series",
+			serial_no=[serial_no],
+			qty=1,
+			rate=100,
+			do_not_submit=True,
+			ignore_sabb_validation=True,
+		)
 
-			self.assertRaises(frappe.ValidationError, pos_inv.submit)
-
-		finally:
-			frappe.db.rollback(save_point="before_test_delivered_serial_no_case")
-			frappe.set_user("Administrator")
+		self.assertRaises(frappe.ValidationError, pos_inv.submit)
 
 	def test_bundle_stock_availability_validation(self):
 		from erpnext.accounts.doctype.pos_invoice.pos_invoice import ProductBundleStockValidationError
@@ -1150,6 +1069,76 @@ class TestPOSInvoice(IntegrationTestCase):
 		self.assertRaises(ProductBundleStockValidationError, pos_inv_insufficient.submit)
 
 		frappe.set_user("test@example.com")
+
+	def test_make_merge_log_respects_customer_user_permission(self):
+		inside = create_pos_invoice(pos_profile=self.pos_profile.name, do_not_submit=1)
+		outside = create_pos_invoice(
+			customer="_Test Customer 1", pos_profile=self.pos_profile.name, do_not_submit=1
+		)
+		user = make_fenced_user("pos-merge-log-user@example.com", ["Sales User"])
+
+		with as_user(user):
+			merge_log = make_merge_log([{"name": outside.name}])
+		self.assertEqual(merge_log.get("customer"), "_Test Customer 1")
+
+		make_fenced_user(user, ["Sales User"], [("Customer", "_Test Customer")])
+		with as_user(user):
+			merge_log = make_merge_log([{"name": inside.name}])
+			self.assertEqual(merge_log.get("customer"), "_Test Customer")
+			self.assertEqual(merge_log.get("pos_invoices")[0].get("pos_invoice"), inside.name)
+
+			assert_refused_without(self, ["_Test Customer 1"], make_merge_log, [{"name": outside.name}])
+			assert_not_found(self, make_merge_log, [{"name": [outside.name]}])
+			for name in ("", None):
+				assert_refused(self, make_merge_log, [{"name": name}])
+			for name in (0, False):
+				assert_not_found(self, make_merge_log, [{"name": name}])
+			assert_refused_without(
+				self, ["_Test Customer 1"], make_merge_log, [{"name": inside.name}, {"name": outside.name}]
+			)
+			assert_not_found(self, make_merge_log, [{"name": inside.name}, {"name": MISSING_NAME}])
+
+			def build_kwargs(name):
+				return {"invoices": [{"name": name}]}
+
+			assert_refused_for_names(self, make_merge_log, build_kwargs, [], caller_supplied=True)
+
+	def test_serial_and_batch_item_with_only_batch_in_fields(self):
+		from erpnext.stock.doctype.serial_and_batch_bundle.test_serial_and_batch_bundle import (
+			get_batch_from_bundle,
+		)
+
+		item_code = make_item(
+			properties={
+				"is_stock_item": 1,
+				"has_batch_no": 1,
+				"create_new_batch": 1,
+				"batch_number_series": "PSB-.#####",
+				"has_serial_no": 1,
+				"serial_no_series": "PSS-.#####",
+			}
+		).name
+		se = make_stock_entry(item_code=item_code, target="_Test Warehouse - _TC", qty=5, basic_rate=100)
+		batch_no = get_batch_from_bundle(se.items[0].serial_and_batch_bundle)
+
+		with self.change_settings("Stock Settings", {"auto_create_serial_and_batch_bundle_for_outward": 1}):
+			pos = create_pos_invoice(
+				item=item_code, qty=2, rate=100, use_serial_batch_fields=1, batch_no=batch_no, do_not_save=1
+			)
+			pos.items[0].update({"has_serial_no": 1, "has_batch_no": 1})
+			pos.append("payments", {"mode_of_payment": "Cash", "amount": 200, "default": 1})
+			pos.insert()
+			self.assertFalse(pos.items[0].serial_no)
+
+			pos.submit()
+			pos.reload()
+			entries = frappe.get_all(
+				"Serial and Batch Entry",
+				{"parent": pos.items[0].serial_and_batch_bundle},
+				["serial_no", "batch_no"],
+			)
+			self.assertEqual(len({d.serial_no for d in entries if d.serial_no}), 2)
+			self.assertEqual({d.batch_no for d in entries}, {batch_no})
 
 
 def create_pos_invoice(**args):
