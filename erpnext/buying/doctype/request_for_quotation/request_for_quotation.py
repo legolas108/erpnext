@@ -87,6 +87,8 @@ class RequestforQuotation(BuyingController):
 		validate_for_items(self)
 		self.set_missing_item_names()
 		super().set_qty_as_per_stock_uom()
+		self.validate_uom_is_integer("uom", "qty")
+		self.validate_uom_is_integer("stock_uom", "stock_qty")
 		self.update_email_id()
 
 		if self.docstatus < 1:
@@ -495,7 +497,7 @@ def make_supplier_quotation_from_rfq(source_name, target_doc=None, for_supplier=
 
 
 # This method is used to make supplier quotation from supplier's portal.
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_supplier_quotation(doc: str | Document | dict):
 	if isinstance(doc, str):
 		doc = json.loads(doc)

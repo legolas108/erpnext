@@ -2,6 +2,7 @@
 # License: GNU General Public License v3. See license.txt
 
 
+import datetime
 import json
 import typing
 from functools import WRAPPER_ASSIGNMENTS, wraps
@@ -180,6 +181,7 @@ def _get_item_details(
 		):
 			fallback_args = ctx.copy()
 			fallback_args.price_list = frappe.get_single_value("Selling Settings", "selling_price_list")
+			fallback_args.price_list_uom_dependant = None
 			out.update(get_price_list_rate(fallback_args, item))
 
 	ctx.customer = current_customer
@@ -194,6 +196,9 @@ def _get_item_details(
 	for key, value in out.items():
 		if ctx.get(key) is None:
 			ctx[key] = value
+
+	if not ctx.price_list_rate:
+		ctx.price_list_rate = out.price_list_rate
 
 	if not source_row:
 		out.update(get_pricing_rule_for_item(ctx, doc=doc, for_validate=for_validate))
@@ -312,8 +317,6 @@ def set_valuation_rate(out: ItemDetails | dict, ctx: ItemDetailsCtx):
 
 
 def update_stock(ctx, out, doc=None):
-	from erpnext.stock.doctype.batch.batch import get_available_batches
-
 	if (
 		(
 			ctx.get("doctype") in ["Delivery Note", "POS Invoice"]
@@ -340,31 +343,20 @@ def update_stock(ctx, out, doc=None):
 
 		if ctx.get("doctype") == "Delivery Note":
 			kwargs["against_sales_order"] = ctx.get("against_sales_order")
+		elif ctx.get("doctype") == "Sales Invoice":
+			kwargs["against_sales_order"] = ctx.get("sales_order")
 
 		if ctx.get("ignore_serial_nos"):
 			kwargs["ignore_serial_nos"] = ctx.get("ignore_serial_nos")
 
-		qty = out.stock_qty
-		batches = []
 		if out.has_batch_no and not ctx.get("batch_no"):
-			batches = get_available_batches(kwargs)
-			if doc:
-				filter_batches(batches, doc)
-
-			for batch_no, batch_qty in batches.items():
+			batch_no = get_batch_no_covering_qty(kwargs, doc, out.stock_qty)
+			if batch_no:
+				out.update({"batch_no": batch_no, "actual_batch_qty": out.stock_qty})
 				rate = _get_batch_based_item_price(
 					{"price_list": doc.get("selling_price_list"), "uom": out.uom, "batch_no": batch_no},
 					out.item_code,
 				)
-				if batch_qty >= qty:
-					out.update({"batch_no": batch_no, "actual_batch_qty": qty})
-					if rate:
-						out.update({"rate": rate, "price_list_rate": rate})
-					break
-				else:
-					qty -= batch_qty
-
-				out.update({"batch_no": batch_no, "actual_batch_qty": batch_qty})
 				if rate:
 					out.update({"rate": rate, "price_list_rate": rate})
 
@@ -385,8 +377,9 @@ def needs_serial_nos(ctx, out):
 def set_serial_nos_for_outward(ctx, out, kwargs, doc):
 	from erpnext.stock.doctype.serial_no.serial_no import get_serial_nos_for_outward
 
-	if out.has_batch_no:
-		kwargs["batches"] = [ctx.get("batch_no") or out.get("batch_no")]
+	batch_no = ctx.get("batch_no") or out.get("batch_no")
+	if out.has_batch_no and batch_no:
+		kwargs["batches"] = [batch_no]
 
 	serial_nos = get_filtered_serial_nos(get_serial_nos_for_outward(kwargs), doc)
 	out["serial_no"] = "\n".join(serial_nos[: cint(out.stock_qty)])
@@ -403,6 +396,20 @@ def has_incorrect_serial_nos(ctx, out):
 		return True
 
 	return False
+
+
+def get_batch_no_covering_qty(kwargs, doc, qty):
+	from erpnext.stock.doctype.batch.batch import get_available_batches
+
+	batches = get_available_batches(frappe._dict(kwargs, qty=0))
+	if doc:
+		filter_batches(batches, doc)
+
+	batch_no = next(iter(batches), None)
+	if batch_no and flt(batches[batch_no]) >= flt(qty):
+		return batch_no
+
+	return None
 
 
 def filter_batches(batches, doc):
@@ -647,9 +654,9 @@ def get_basic_details(ctx: ItemDetailsCtx, item, overwrite_warehouse=True) -> It
 	if item.stock_uom == ctx.uom:
 		out.conversion_factor = 1.0
 	else:
-		out.conversion_factor = ctx.conversion_factor or get_conversion_factor(item.name, ctx.uom).get(
-			"conversion_factor"
-		)
+		out.conversion_factor = ctx.conversion_factor or get_conversion_factor(
+			item.name, ctx.uom, throw_if_missing=True
+		).get("conversion_factor")
 
 	ctx.conversion_factor = out.conversion_factor
 	out.stock_qty = out.qty * out.conversion_factor
@@ -884,14 +891,13 @@ def get_item_tax_template(ctx, item=None, out: ItemDetails | None = None):
 
 
 def _get_item_tax_template_from_item_group(ctx, item_group, out=None):
-	from frappe.utils.nestedset import get_ancestors_of
-
-	ancestors = get_ancestors_of("Item Group", item_group)
-	for group in [item_group, *ancestors]:
-		group_doc = frappe.get_cached_doc("Item Group", group)
+	"""Return the first tax template found walking up from `item_group` to the root."""
+	while item_group:
+		group_doc = frappe.get_cached_doc("Item Group", item_group)
 		item_tax_template = _get_item_tax_template(ctx, group_doc.taxes, out)
 		if item_tax_template:
 			return item_tax_template
+		item_group = group_doc.parent_item_group
 	return None
 
 
@@ -915,55 +921,61 @@ def _get_item_tax_template(
 	"""
 	if out is None:
 		out = ItemDetails()
-	taxes_with_validity = []
-	taxes_with_no_validity = []
+	taxes = get_latest_item_taxes(get_applicable_item_taxes(ctx, taxes))
+	category_templates = [
+		tax.item_tax_template for tax in taxes if cstr(tax.tax_category) == cstr(ctx.get("tax_category"))
+	]
 
+	if for_validate:
+		return category_templates
+
+	# do not change if already a valid template
+	if ctx.get("item_tax_template") in (category_templates or {t.item_tax_template for t in taxes}):
+		out.item_tax_template = ctx.get("item_tax_template")
+		return ctx.get("item_tax_template")
+
+	if category_templates:
+		out.item_tax_template = category_templates[0]
+		return category_templates[0]
+	return None
+
+
+def get_applicable_item_taxes(ctx, taxes) -> list:
+	validation_date = getdate(ctx.get("bill_date") or ctx.get("posting_date") or ctx.get("transaction_date"))
+	applicable_taxes = []
 	for tax in taxes:
 		disabled, tax_company = frappe.get_cached_value(
 			"Item Tax Template", tax.item_tax_template, ["disabled", "company"]
 		)
-		if not disabled and tax_company == ctx["company"]:
-			if tax.valid_from or tax.maximum_net_rate:
-				# In purchase Invoice first preference will be given to supplier invoice date
-				# if supplier date is not present then posting date
-				validation_date = (
-					ctx.get("bill_date") or ctx.get("posting_date") or ctx.get("transaction_date")
-				)
+		if (
+			not disabled
+			and tax_company == ctx["company"]
+			and get_item_tax_valid_from(tax) <= validation_date
+			and is_within_valid_range(ctx, tax)
+		):
+			applicable_taxes.append(tax)
 
-				if getdate(tax.valid_from) <= getdate(validation_date) and is_within_valid_range(ctx, tax):
-					taxes_with_validity.append(tax)
-			else:
-				taxes_with_no_validity.append(tax)
+	return applicable_taxes
 
-	if taxes_with_validity:
-		taxes = sorted(taxes_with_validity, key=lambda i: i.valid_from or tax.maximum_net_rate, reverse=True)
-	else:
-		taxes = taxes_with_no_validity
 
-	if for_validate:
-		return [
-			tax.item_tax_template
-			for tax in taxes
-			if (
-				cstr(tax.tax_category) == cstr(ctx.get("tax_category"))
-				and (tax.item_tax_template not in taxes)
-			)
-		]
+def get_latest_item_taxes(taxes) -> list:
+	latest_priority = {}
+	latest_taxes = []
+	for tax in sorted(taxes, key=get_item_tax_priority, reverse=True):
+		priority = get_item_tax_priority(tax)
+		key = (tax.get("parenttype"), tax.get("parent"), cstr(tax.tax_category))
+		if latest_priority.setdefault(key, priority) == priority:
+			latest_taxes.append(tax)
 
-	# all templates have validity and no template is valid
-	if not taxes_with_validity and (not taxes_with_no_validity):
-		return None
+	return latest_taxes
 
-	# do not change if already a valid template
-	if ctx.get("item_tax_template") in {t.item_tax_template for t in taxes}:
-		out.item_tax_template = ctx.get("item_tax_template")
-		return ctx.get("item_tax_template")
 
-	for tax in taxes:
-		if cstr(tax.tax_category) == cstr(ctx.get("tax_category")):
-			out.item_tax_template = tax.item_tax_template
-			return tax.item_tax_template
-	return None
+def get_item_tax_priority(tax) -> tuple:
+	return get_item_tax_valid_from(tax), flt(tax.maximum_net_rate) > 0
+
+
+def get_item_tax_valid_from(tax) -> datetime.date:
+	return getdate(tax.valid_from) if tax.valid_from else datetime.date.min
 
 
 @erpnext.normalize_ctx_input(ItemDetailsCtx)
@@ -1093,11 +1105,9 @@ def get_default_discount_account(ctx: ItemDetailsCtx, item, item_group, brand):
 def get_default_deferred_account(ctx: ItemDetailsCtx, item, fieldname=None):
 	if item.get("enable_deferred_revenue") or item.get("enable_deferred_expense"):
 		return (
-			frappe.get_cached_value(
-				"Item Default",
-				{"parent": ctx.item_code, "company": ctx.company},
-				fieldname,
-			)
+			get_item_defaults(ctx.item_code, ctx.company).get(fieldname)
+			or get_item_group_defaults(ctx.item_code, ctx.company).get(fieldname)
+			or get_brand_defaults(ctx.item_code, ctx.company).get(fieldname)
 			or ctx.get(fieldname)
 			or frappe.get_cached_value("Company", ctx.company, "default_" + fieldname)
 		)
@@ -1174,6 +1184,12 @@ def get_price_list_rate(ctx: ItemDetailsCtx, item_doc, out: ItemDetails = None):
 
 		if meta.get_field("currency"):
 			validate_conversion_rate(ctx, meta)
+
+		# Transactions have no field for this flag, so item rows must read it from the Price List
+		if ctx.get("price_list_uom_dependant") is None and ctx.price_list:
+			ctx.price_list_uom_dependant = frappe.get_cached_value(
+				"Price List", ctx.price_list, "price_not_uom_dependent"
+			)
 
 		price_list_rate = get_price_list_rate_for(ctx, item_doc.name)
 
@@ -1486,7 +1502,10 @@ def get_price_list_rate_for(ctx: ItemDetailsCtx, item_code):
 		if desired_qty := ctx.get("qty"):
 			item_price_data = get_prices_fitting_packing_unit(price_list_rate, desired_qty)
 	else:
-		general_price_list_rate = get_item_price(pctx, item_code, ignore_party=ctx.get("ignore_party"))
+		# Without ignore_party this repeats the query above, which found nothing
+		general_price_list_rate = ctx.get("ignore_party") and get_item_price(
+			pctx, item_code, ignore_party=True
+		)
 
 		if not general_price_list_rate and ctx.get("uom") != ctx.get("stock_uom"):
 			pctx.uom = ctx.get("stock_uom")
@@ -1693,8 +1712,10 @@ def get_pos_profile(company, pos_profile=None, user=None):
 
 
 @frappe.whitelist()
-def get_conversion_factor(item_code, uom):
-	item = frappe.get_cached_value("Item", item_code, ["variant_of", "stock_uom"], as_dict=True)
+def get_conversion_factor(item_code, uom, throw_if_missing: bool = False):
+	item = frappe.get_cached_value(
+		"Item", item_code, ["variant_of", "stock_uom", "is_stock_item"], as_dict=True
+	)
 	if not item_code or not item or uom == item.stock_uom:
 		return {"conversion_factor": 1.0}
 
@@ -1719,6 +1740,9 @@ def get_conversion_factor(item_code, uom):
 		conversion_factor = get_uom_conv_factor(uom, item.stock_uom)
 	else:
 		conversion_factor = conversion_factor[0]
+
+	if throw_if_missing and not conversion_factor and item.is_stock_item:
+		throw(_("UOM {0} has no conversion factor in Item {1}.").format(uom, item_code))
 
 	return {"conversion_factor": conversion_factor or 1.0}
 
@@ -1893,15 +1917,15 @@ def get_price_list_currency_and_exchange_rate(ctx: ItemDetailsCtx):
 	if not ctx.price_list:
 		return {}
 
-	if ctx.doctype in ["Quotation", "Sales Order", "Delivery Note", "Sales Invoice", "POS Invoice"]:
+	if ctx.doctype in sales_doctypes:
 		ctx.update({"exchange_rate": "for_selling"})
-	elif ctx.doctype in ["Supplier Quotation", "Purchase Order", "Purchase Receipt", "Purchase Invoice"]:
+	elif ctx.doctype in purchase_doctypes:
 		ctx.update({"exchange_rate": "for_buying"})
 
 	price_list_details = get_price_list_details(ctx.price_list)
 
 	price_list_currency = price_list_details.get("currency")
-	price_list_uom_dependant = price_list_details.get("price_list_uom_dependant")
+	price_list_uom_dependant = price_list_details.get("price_not_uom_dependent")
 
 	plc_conversion_rate = ctx.plc_conversion_rate
 	company_currency = get_company_currency(ctx.company)

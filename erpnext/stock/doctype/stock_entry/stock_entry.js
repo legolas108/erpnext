@@ -130,11 +130,9 @@ frappe.ui.form.on("Stock Entry", {
 
 		erpnext.accounts.dimensions.setup_dimension_filters(frm, frm.doctype);
 
-		frappe.db.get_single_value("Stock Settings", "disable_serial_no_and_batch_selector").then((value) => {
-			if (value) {
-				frappe.flags.hide_serial_batch_dialog = true;
-			}
-		});
+		if (frappe.boot.sysdefaults.disable_serial_no_and_batch_selector) {
+			frappe.flags.hide_serial_batch_dialog = true;
+		}
 		attach_bom_items(frm.doc.bom_no);
 
 		if (!check_should_not_attach_bom_items(frm.doc.bom_no)) {
@@ -1455,7 +1453,7 @@ erpnext.stock.StockEntry = class StockEntry extends erpnext.stock.StockControlle
 		};
 
 		this.frm.fields_dict.items.grid.get_field("item_code").get_query = function () {
-			return erpnext.queries.item({ is_stock_item: 1 });
+			return erpnext.queries.item({ is_stock_item: 1, company: me.frm.doc.company });
 		};
 
 		this.frm.set_query("purchase_order", function () {
