@@ -1,11 +1,6 @@
 {
- "charts": [
-  {
-   "chart_name": "Profit and Loss",
-   "label": "Profit and Loss"
-  }
- ],
- "content": "[{\"id\": \"5e7b1c9a2f\", \"type\": \"onboarding\", \"data\": {\"onboarding_name\": \"Organization Onboarding\", \"col\": 12}}, {\"id\": \"797d6b3896\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Profit and Loss\", \"col\": 12}}, {\"id\": \"7dfaeec97e\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Annual Sales\", \"col\": 4}}, {\"id\": \"b76ffb894b\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Annual Purchase\", \"col\": 4}}, {\"id\": \"ba3943fb2d\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Total Stock Value\", \"col\": 4}}]",
+ "charts": [],
+ "content": "[{\"id\": \"V6zciQZTEO\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Items\", \"col\": 3}}, {\"id\": \"ilJ8CQlrZw\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Work Orders\", \"col\": 3}}, {\"id\": \"oY-55Wg1Qr\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Purchase Orders\", \"col\": 3}}, {\"id\": \"tQCVrhN7R0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Item Purchase Orders\", \"col\": 3}}, {\"id\": \"naNsvWxXbk\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Stock Entry (Loss,...)\", \"col\": 3}}, {\"id\": \"vx7vzNCJn7\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Stock Reconciliations\", \"col\": 3}}, {\"id\": \"fVow6Yu1rV\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Stock Ledger\", \"col\": 3}}, {\"id\": \"EHw2jONRcE\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Stock Balance\", \"col\": 3}}, {\"id\": \"gXQjNiaBp2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Suppliers\", \"col\": 3}}, {\"id\": \"HWdZ3nhpLh\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Customers\", \"col\": 3}}]",
  "creation": "2020-01-23 13:46:38.833076",
  "custom_blocks": [],
  "docstatus": 0,
@@ -17,24 +12,11 @@
  "is_hidden": 0,
  "label": "Home",
  "links": [],
- "modified": "2026-10-04 15:00:00.000000",
+ "modified": "2026-11-06 08:16:26.351466",
  "modified_by": "Administrator",
  "module": "Setup",
  "name": "Home",
- "number_cards": [
-  {
-   "label": "Annual Sales",
-   "number_card_name": "Annual Sales"
-  },
-  {
-   "label": "Annual Purchase",
-   "number_card_name": "Annual Purchase"
-  },
-  {
-   "label": "Total Stock Value",
-   "number_card_name": "Total Stock Value"
-  }
- ],
+ "number_cards": [],
  "owner": "Administrator",
  "parent_page": "",
  "public": 1,
@@ -46,7 +28,88 @@
   }
  ],
  "sequence_id": 1.0,
- "shortcuts": [],
+ "shortcuts": [
+  {
+   "color": "Grey",
+   "doc_view": "Report Builder",
+   "label": "Items",
+   "link_to": "Item",
+   "stats_filter": "[]",
+   "type": "DocType"
+  },
+  {
+   "color": "Blue",
+   "doc_view": "Report Builder",
+   "label": "Work Orders",
+   "link_to": "Work Order",
+   "stats_filter": "[]",
+   "type": "DocType"
+  },
+  {
+   "color": "Orange",
+   "doc_view": "Report Builder",
+   "label": "Purchase Orders",
+   "link_to": "Purchase Order",
+   "stats_filter": "[]",
+   "type": "DocType"
+  },
+  {
+   "color": "Orange",
+   "doc_view": "Report Builder",
+   "label": "Item Purchase Orders",
+   "link_to": "Item Purchase Order",
+   "stats_filter": "[]",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "Report Builder",
+   "label": "Stock Entry (Loss,...)",
+   "link_to": "Stock Entry",
+   "stats_filter": "[]",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "Report Builder",
+   "label": "Stock Reconciliations",
+   "link_to": "Stock Reconciliation",
+   "stats_filter": "[]",
+   "type": "DocType"
+  },
+  {
+   "color": "Green",
+   "doc_view": "Report Builder",
+   "label": "Suppliers",
+   "link_to": "Supplier",
+   "stats_filter": "[]",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Stock Ledger",
+   "link_to": "Stock Ledger",
+   "report_ref_doctype": "Stock Ledger Entry",
+   "type": "Report"
+  },
+  {
+   "color": "Green",
+   "doc_view": "Report Builder",
+   "label": "Customers",
+   "link_to": "Customer",
+   "stats_filter": "[]",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Stock Balance",
+   "link_to": "Stock Balance",
+   "report_ref_doctype": "Stock Ledger Entry",
+   "type": "Report"
+  }
+ ],
  "standard": 1,
  "title": "Home",
  "type": "Workspace"

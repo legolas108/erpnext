@@ -243,7 +243,6 @@
    "fieldname": "is_stock_item",
    "fieldtype": "Check",
    "in_import_template": 1,
-   "in_list_view": 0,
    "label": "Maintain Stock",
    "oldfieldname": "is_stock_item",
    "oldfieldtype": "Select",
@@ -288,9 +287,9 @@
    "fieldname": "is_fixed_asset",
    "fieldtype": "Check",
    "in_import_template": 1,
+   "in_list_view": 1,
    "label": "Is Fixed Asset",
-   "read_only_depends_on": "eval:doc.is_stock_item",
-   "in_list_view": 1
+   "read_only_depends_on": "eval:doc.is_stock_item"
   },
   {
    "allow_in_quick_entry": 1,
@@ -391,12 +390,12 @@
   },
   {
    "depends_on": "is_stock_item",
+   "description": "Serialized items are valued at Moving Average once stock transactions exist and Serial No Wise Valuation is disabled.",
    "documentation_url": "https://docs.frappe.io/erpnext/change-valuation-method",
    "fieldname": "valuation_method",
    "fieldtype": "Select",
    "label": "Valuation Method",
-   "options": "\nFIFO\nMoving Average\nLIFO",
-   "description": "Serialized items are valued at Moving Average once stock transactions exist and Serial No Wise Valuation is disabled."
+   "options": "\nFIFO\nMoving Average\nLIFO"
   },
   {
    "depends_on": "is_stock_item",
@@ -563,7 +562,6 @@
    "description": "If this item has variants, then it cannot be selected in sales orders etc.",
    "fieldname": "has_variants",
    "fieldtype": "Check",
-   "in_standard_filter": 1,
    "label": "Has Variants",
    "show_description_on_click": 1
   },
@@ -619,7 +617,7 @@
    "oldfieldtype": "Currency"
   },
   {
-   "description": "Minimum stock level to maintain as a buffer. Used to calculate recommended reorder level: Reorder Level = Safety Stock + (Average Daily Consumption × Lead Time).",
+   "description": "Minimum stock level to maintain as a buffer. Used to calculate recommended reorder level: Reorder Level = Safety Stock + (Average Daily Consumption \u00d7 Lead Time).",
    "fieldname": "safety_stock",
    "fieldtype": "Float",
    "label": "Safety Stock",
@@ -723,9 +721,9 @@
    "fieldname": "is_sales_item",
    "fieldtype": "Check",
    "in_import_template": 1,
+   "in_list_view": 1,
    "label": "Allow Sales",
-   "show_description_on_click": 1,
-   "in_list_view": 1
+   "show_description_on_click": 1
   },
   {
    "fieldname": "column_break3",
@@ -1112,7 +1110,7 @@
  "image_field": "image",
  "links": [],
  "make_attachments_public": 1,
- "modified": "2026-10-19 12:00:00.000000",
+ "modified": "2026-11-05 11:46:08.325807",
  "modified_by": "Administrator",
  "module": "Stock",
  "name": "Item",
