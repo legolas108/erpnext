@@ -147,7 +147,11 @@ frappe.query_reports["Stock Balance"] = {
 	],
 
 	formatter: function (value, row, column, data, default_formatter) {
-		value = default_formatter(value, row, column, data);
+		if (column.fieldname === "item_code" && value)  // do not replace ID with full name
+			value = `<a href="/app/item/${encodeURIComponent(value)}" data-doctype="Item" ` +
+				`data-name="${frappe.utils.escape_html(value)}">${frappe.utils.escape_html(value)}</a>`;
+		else
+			value = default_formatter(value, row, column, data);
 
 		if (column.fieldname == "out_qty" && data && data.out_qty > 0) {
 			value = "<span style='color:red'>" + value + "</span>";

@@ -687,20 +687,20 @@ class StockBalanceReport:
 					"fieldname": "stock_uom",
 					"fieldtype": "Link",
 					"options": "UOM",
-					"width": 100,
+					"width": 110,
 				},
 				{
 					"label": _("Balance Qty"),
 					"fieldname": "bal_qty",
 					"fieldtype": "Float",
-					"width": 100,
+					"width": 120,
 					"convertible": "qty",
 				},
 				{
 					"label": _("Valuation Rate"),
 					"fieldname": "val_rate",
 					"fieldtype": self.filters.valuation_field_type or "Currency",
-					"width": 100,
+					"width": 120,
 					"convertible": "rate",
 					"options": "Company:company:default_currency"
 					if self.filters.valuation_field_type == "Currency"
@@ -717,14 +717,14 @@ class StockBalanceReport:
 					"label": _("Opening Qty"),
 					"fieldname": "opening_qty",
 					"fieldtype": "Float",
-					"width": 100,
+					"width": 120,
 					"convertible": "qty",
 				},
 				{
 					"label": _("Opening Value"),
 					"fieldname": "opening_val",
 					"fieldtype": "Currency",
-					"width": 120,
+					"width": 140,
 					"options": "Company:company:default_currency",
 				},
 				{

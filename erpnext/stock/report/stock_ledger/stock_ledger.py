@@ -321,7 +321,7 @@ def get_columns(filters):
 			"fieldname": "stock_uom",
 			"fieldtype": "Link",
 			"options": "UOM",
-			"width": 80,
+			"width": 110,
 		},
 	]
 
@@ -356,7 +356,7 @@ def get_columns(filters):
 				"label": _("Balance Qty"),
 				"fieldname": "qty_after_transaction",
 				"fieldtype": "Float",
-				"width": 100,
+				"width": 120,
 				"convertible": "qty",
 			},
 			# {
@@ -386,20 +386,27 @@ def get_columns(filters):
 			# 	"convertible": "rate",
 			# },
 			{
-				"label": _("Outgoing Rate"),
-				"fieldname": "in_out_rate",
-				"fieldtype": filters.valuation_field_type,
+				"label": _("Valuation Rate"),
+				"fieldname": "valuation_rate",
+				"fieldtype": "Currency",
 				"width": 120,
-				"options": "Company:company:default_currency"
-				if filters.valuation_field_type == "Currency"
-				else None,
-				"convertible": "rate",
+				"options": "Company:company:default_currency",
 			},
+			# {
+			# 	"label": _("Outgoing Rate"),
+			# 	"fieldname": "in_out_rate",
+			# 	"fieldtype": filters.valuation_field_type,
+			# 	"width": 120,
+			# 	"options": "Company:company:default_currency"
+			# 	if filters.valuation_field_type == "Currency"
+			# 	else None,
+			# 	"convertible": "rate",
+			# },
 			{
 				"label": _("Balance Value"),
 				"fieldname": "stock_value",
 				"fieldtype": "Currency",
-				"width": 120,
+				"width": 140,
 				"options": "Company:company:default_currency",
 			},
 			{
@@ -427,7 +434,7 @@ def get_columns(filters):
 				"fieldname": "voucher_type",
 				"fieldtype": "Link",
 				"options": "DocType",
-				"width": 110,
+				"width": 140,
 			},
 			{
 				"label": _("Voucher #"),
