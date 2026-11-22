@@ -21,6 +21,7 @@
   "dependencies": {
     "occt-import-js": "^0.0.23",
     "onscan.js": "^1.5.2",
+    "sass": "1.77.8",
     "three": "^0.186.1"
   }
 }
